@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1016362633043",
+    "project_id": "basood-1ef22",
+    "storage_bucket": "basood-1ef22.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1016362633043:android:13fc8a92c6a88d61f443a6",
+        "android_client_info": {
+          "package_name": "com.company.basood"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBMXeyXBA-u05Rn4dlwdmcodH59h_Im72A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
