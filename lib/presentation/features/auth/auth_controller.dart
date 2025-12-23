@@ -163,6 +163,7 @@ class AuthController extends StateNotifier<AuthState> {
   }
 
   Future<void> loadStoredTokens() async {
+    FileLogger.log('🔄 ========== loadStoredTokens CALLED ==========');
     state = state.copyWith(isLoading: true);
     
     try {
@@ -172,7 +173,13 @@ class AuthController extends StateNotifier<AuthState> {
       final refreshToken = await storage.read(key: 'refresh_token');
       final userJson = await storage.read(key: 'user_data');
       
+      FileLogger.log('   Checking stored tokens...');
+      FileLogger.log('   Access token found: ${accessToken != null}');
+      FileLogger.log('   Refresh token found: ${refreshToken != null}');
+      FileLogger.log('   User data found: ${userJson != null}');
+      
       if (accessToken != null && refreshToken != null && userJson != null) {
+        FileLogger.log('   ✅ All tokens found - User is logged in');
         ref.read(accessTokenProvider.notifier).state = accessToken;
         ref.read(refreshTokenProvider.notifier).state = refreshToken;
         
@@ -217,12 +224,14 @@ class AuthController extends StateNotifier<AuthState> {
           await logout();
         }
       } else {
+        FileLogger.log('   ⚠️ No stored tokens found - User is NOT logged in');
         state = state.copyWith(
           isLoading: false,
           isInitialized: true,
           user: null,
         );
       }
+      FileLogger.log('========== loadStoredTokens COMPLETE ==========');
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
