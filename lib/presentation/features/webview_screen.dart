@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'dart:convert';
 import '../../core/config/env.dart';
 import '../../services/notification_service.dart';
 import '../../core/utils/file_logger.dart';
+import 'auth/auth_controller.dart';
 
 class WebViewScreen extends ConsumerStatefulWidget {
   const WebViewScreen({super.key});
@@ -21,6 +23,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
   PullToRefreshController? _pullToRefreshController;
 
   String? _initialUrl;
+  bool _hasCheckedLogin = false; // Track if we've already checked for login
 
   @override
   void initState() {
@@ -110,6 +113,100 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
     
     if (mounted) {
       setState(() {});
+    }
+  }
+
+  /// Check if user is logged in by monitoring URL and extracting token from WebView
+  Future<void> _checkLoginStatus(InAppWebViewController controller, WebUri? url) async {
+    if (url == null) return;
+    
+    final urlPath = url.path;
+    FileLogger.log('🌐 WebView URL changed: $urlPath');
+    
+    // Check if user is on authenticated route (logged in)
+    final isAuthenticatedRoute = urlPath.contains('/supplier-side') && 
+                                 !urlPath.contains('/login') &&
+                                 (urlPath.contains('/home') || urlPath.contains('/supplier-side'));
+    
+    if (isAuthenticatedRoute && !_hasCheckedLogin) {
+      FileLogger.log('   ✅ User navigated to authenticated route - checking for login tokens...');
+      _hasCheckedLogin = true; // Only check once to avoid multiple checks
+      
+      // Wait a bit for the page to fully load and set tokens
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      try {
+        // Try to extract access token from localStorage or sessionStorage
+        final tokenScript = '''
+          (function() {
+            try {
+              // Try multiple possible token storage keys
+              var token = localStorage.getItem('access_token') || 
+                         localStorage.getItem('token') ||
+                         localStorage.getItem('accessToken') ||
+                         sessionStorage.getItem('access_token') ||
+                         sessionStorage.getItem('token') ||
+                         sessionStorage.getItem('accessToken');
+              
+              var refreshToken = localStorage.getItem('refresh_token') || 
+                                localStorage.getItem('refreshToken') ||
+                                sessionStorage.getItem('refresh_token') ||
+                                sessionStorage.getItem('refreshToken');
+              
+              if (token) {
+                return JSON.stringify({
+                  accessToken: token,
+                  refreshToken: refreshToken || null
+                });
+              }
+              return 'NO_TOKEN';
+            } catch(e) {
+              return 'ERROR: ' + e.message;
+            }
+          })();
+        ''';
+        
+        final result = await controller.evaluateJavascript(source: tokenScript);
+        FileLogger.log('   JavaScript result: $result');
+        
+        if (result != null && result != 'NO_TOKEN' && !result.startsWith('ERROR')) {
+          try {
+            final tokenData = jsonDecode(result.toString().replaceAll("'", '"'));
+            final accessToken = tokenData['accessToken']?.toString();
+            final refreshToken = tokenData['refreshToken']?.toString();
+            
+            if (accessToken != null && accessToken.isNotEmpty) {
+              FileLogger.log('   🔑 Token found in WebView storage - syncing with Flutter...');
+              FileLogger.log('   Access token length: ${accessToken.length}');
+              
+              // Sync tokens with Flutter auth state
+              await ref.read(authControllerProvider.notifier).syncTokensFromWebView(
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+              );
+              
+              FileLogger.log('   ✅ Tokens synced - FCM token should be sent automatically');
+            } else {
+              FileLogger.log('   ⚠️ Token found but is empty');
+            }
+          } catch (e) {
+            FileLogger.log('   ❌ Error parsing token data: $e');
+            FileLogger.log('   Raw result: $result');
+          }
+        } else {
+          FileLogger.log('   ⚠️ No token found in WebView storage');
+          FileLogger.log('   This might mean:');
+          FileLogger.log('      - User is not logged in yet');
+          FileLogger.log('      - Token is stored with different key');
+          FileLogger.log('      - Web app uses different storage method');
+        }
+      } catch (e) {
+        FileLogger.log('   ❌ Error checking login status: $e');
+      }
+    } else if (urlPath.contains('/login')) {
+      // User navigated to login page - reset check flag
+      _hasCheckedLogin = false;
+      FileLogger.log('   🔄 User navigated to login page - reset login check flag');
     }
   }
 
@@ -251,6 +348,9 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
                         _isLoading = false;
                       });
                       _pullToRefreshController?.endRefreshing();
+                      
+                      // Check if user logged in by monitoring URL
+                      await _checkLoginStatus(controller, url);
                     },
                     onReceivedError: (controller, request, error) {
                       debugPrint('WebView error: ${error.description}');
