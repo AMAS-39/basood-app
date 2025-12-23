@@ -87,15 +87,15 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
         permissions[Permission.microphone] = micStatus;
       }
       
-      debugPrint('Camera permission: ${permissions[Permission.camera]}');
-      debugPrint('Microphone permission: ${permissions[Permission.microphone]}');
+      FileLogger.log('📷 Camera permission: ${permissions[Permission.camera]}');
+      FileLogger.log('🎤 Microphone permission: ${permissions[Permission.microphone]}');
       
       // If microphone is permanently denied, we'll rely on WebView's native permission handler
       if (permissions[Permission.microphone]?.isPermanentlyDenied == true) {
-        debugPrint('⚠️ Microphone permission is permanently denied. User needs to enable it in app settings.');
+        FileLogger.log('⚠️ Microphone permission is permanently denied. User needs to enable it in app settings.');
       }
     } catch (e) {
-      debugPrint('Error requesting permissions: $e');
+      FileLogger.log('❌ Error requesting permissions: $e');
       // Continue anyway - WebView will handle permission requests natively
     }
   }
@@ -353,7 +353,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
                       await _checkLoginStatus(controller, url);
                     },
                     onReceivedError: (controller, request, error) {
-                      debugPrint('WebView error: ${error.description}');
+                      FileLogger.log('❌ WebView error: ${error.description}');
                       setState(() {
                         _isLoading = false;
                         _hasError = true;
@@ -362,7 +362,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
                     },
                     androidOnPermissionRequest: (controller, origin, resources) async {
                       // Grant camera and microphone permissions automatically on Android
-                      debugPrint('Android Permission request from $origin: ${resources.join(", ")}');
+                      FileLogger.log('📱 Android Permission request from $origin: ${resources.join(", ")}');
                       
                       // Check which resources are being requested
                       final needsCamera = resources.contains('android.webkit.resource.VIDEO_CAPTURE');
@@ -373,7 +373,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
                       final cameraStatus = await Permission.camera.status;
                         if (!cameraStatus.isGranted && !cameraStatus.isPermanentlyDenied) {
                         final result = await Permission.camera.request();
-                        debugPrint('Camera permission requested: $result');
+                        FileLogger.log('📷 Camera permission requested: $result');
                           if (result.isDenied || result.isPermanentlyDenied) {
                             return PermissionRequestResponse(
                               resources: resources,
@@ -381,7 +381,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
                             );
                           }
                         } else if (cameraStatus.isPermanentlyDenied) {
-                          debugPrint('⚠️ Camera permission permanently denied');
+                          FileLogger.log('⚠️ Camera permission permanently denied');
                           return PermissionRequestResponse(
                             resources: resources,
                             action: PermissionRequestResponseAction.DENY,
@@ -394,7 +394,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
                       final micStatus = await Permission.microphone.status;
                         if (!micStatus.isGranted && !micStatus.isPermanentlyDenied) {
                         final result = await Permission.microphone.request();
-                        debugPrint('Microphone permission requested: $result');
+                        FileLogger.log('🎤 Microphone permission requested: $result');
                           if (result.isDenied || result.isPermanentlyDenied) {
                             return PermissionRequestResponse(
                               resources: resources,
@@ -402,7 +402,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
                             );
                           }
                         } else if (micStatus.isPermanentlyDenied) {
-                          debugPrint('⚠️ Microphone permission permanently denied');
+                          FileLogger.log('⚠️ Microphone permission permanently denied');
                           return PermissionRequestResponse(
                             resources: resources,
                             action: PermissionRequestResponseAction.DENY,
@@ -424,7 +424,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
                           msg.contains('error [object Object]')) {
                         return;
                       }
-                      debugPrint('WebView Console: $msg');
+                      FileLogger.log('🌐 WebView Console: $msg');
                     },
                     onReceivedServerTrustAuthRequest: (controller, challenge) async {
                       return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED);

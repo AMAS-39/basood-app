@@ -134,7 +134,7 @@ class AuthController extends StateNotifier<AuthState> {
       await authRepo.revokeToken();
     } catch (e) {
       // Ignore logout errors - token might already be invalid/expired
-      print('Token revocation failed (this is usually OK): $e');
+      FileLogger.log('⚠️ Token revocation failed (this is usually OK): $e');
     }
     
     // Clear FCM token sent flag (if user was logged in)
@@ -142,7 +142,7 @@ class AuthController extends StateNotifier<AuthState> {
       try {
         await FirebaseService.clearTokenSentFlag(userId);
       } catch (e) {
-        print('⚠️ Error clearing FCM token flag on logout: $e');
+        FileLogger.log('⚠️ Error clearing FCM token flag on logout: $e');
         // Don't fail logout if FCM cleanup fails
       }
     }
