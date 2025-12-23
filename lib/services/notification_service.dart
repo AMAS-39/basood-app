@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import '../core/utils/file_logger.dart';
 
 class NotificationService {
   NotificationService._();
@@ -48,7 +47,6 @@ class NotificationService {
         ?.createNotificationChannel(_defaultChannel);
 
     _initialized = true;
-    FileLogger.log('✅ NotificationService initialized');
   }
 
   Future<void> showRemoteMessage(RemoteMessage message) async {
@@ -112,6 +110,6 @@ class NotificationService {
   }
 
   void _handleNotificationResponse(NotificationResponse response) {
-    FileLogger.log('📱 Notification clicked: ${response.payload}');
+    // Handle notification tap
   }
 }

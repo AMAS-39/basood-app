@@ -7,7 +7,6 @@ import '../../providers/use_case_providers.dart';
 import '../../providers/di_providers.dart';
 import '../../../services/firebase_service.dart';
 import '../../../core/utils/jwt_utils.dart';
-import '../../../core/utils/file_logger.dart';
 
 final authControllerProvider = StateNotifierProvider<AuthController, AuthState>((ref) {
   return AuthController(ref);
@@ -50,29 +49,16 @@ class AuthController extends StateNotifier<AuthState> {
   }
   
   void _setupTokenRefreshListener() {
-    // Listen for token refresh and send to backend if user is logged in
     FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
-      FileLogger.log('🔄 ========== FCM TOKEN REFRESH (from AuthController) ==========');
-      FileLogger.log('   New token (FULL TOKEN): $newToken');
-      FileLogger.log('   Token length: ${newToken.length} characters');
       try {
-        // Only send if user is logged in
         if (state.user != null && state.user!.id.isNotEmpty) {
-          FileLogger.log('   User is logged in (${state.user!.id}), sending token to backend...');
-          final success = await FirebaseService.sendTokenToBackend(
+          await FirebaseService.sendTokenToBackend(
             newToken,
             state.user!.id,
           );
-          if (success) {
-            FileLogger.log('✅ Refreshed FCM token sent to backend for user: ${state.user!.id}');
-          } else {
-            FileLogger.log('⚠️ Failed to send refreshed FCM token to backend');
-          }
-        } else {
-          FileLogger.log('⏭️ User not logged in, skipping token refresh send');
         }
       } catch (e) {
-        FileLogger.log('⚠️ Error handling token refresh: $e');
+        // Ignore token refresh errors
       }
     });
   }
@@ -109,28 +95,13 @@ class AuthController extends StateNotifier<AuthState> {
         'supplierId': user.supplierId,
       }));
       
-      // Send FCM token to backend after successful login with user ID
-      FileLogger.log('🔐 ========== LOGIN SUCCESSFUL ==========');
-      FileLogger.log('   User ID: ${user.id}');
-      FileLogger.log('   User name: ${user.name}');
+      // Send FCM token to backend after successful login
       try {
-        FileLogger.log('   Getting FCM token...');
         final fcmToken = await FirebaseMessaging.instance.getToken();
         if (fcmToken != null && user.id.isNotEmpty) {
-          FileLogger.log('   FCM token retrieved (FULL TOKEN): $fcmToken');
-          FileLogger.log('   Token length: ${fcmToken.length} characters');
-          FileLogger.log('   Sending to backend...');
-          final success = await FirebaseService.sendTokenToBackend(fcmToken, user.id);
-          if (success) {
-            FileLogger.log('✅ FCM token sent to backend after login for user: ${user.id}');
-          } else {
-            FileLogger.log('⚠️ Failed to send FCM token to backend after login');
-          }
-        } else {
-          FileLogger.log('⚠️ FCM token is null or user ID is empty - token: ${fcmToken != null}, user ID: ${user.id.isNotEmpty}');
+          await FirebaseService.sendTokenToBackend(fcmToken, user.id);
         }
       } catch (e) {
-        FileLogger.log('⚠️ Error sending FCM token after login: $e');
         // Don't fail login if FCM token send fails
       }
       
@@ -182,26 +153,18 @@ class AuthController extends StateNotifier<AuthState> {
   }
 
   Future<void> loadStoredTokens() async {
-    FileLogger.log('🔐 ========== LOADING STORED TOKENS ==========');
     state = state.copyWith(isLoading: true);
     
     try {
       final storage = ref.read(secureStorageProvider);
-      FileLogger.log('   📦 Reading tokens from secure storage...');
       
       final accessToken = await storage.read(key: 'access_token');
       final refreshToken = await storage.read(key: 'refresh_token');
       final userJson = await storage.read(key: 'user_data');
       
-      FileLogger.log('   Access token found: ${accessToken != null ? "YES (${accessToken.length} chars)" : "NO"}');
-      FileLogger.log('   Refresh token found: ${refreshToken != null ? "YES (${refreshToken.length} chars)" : "NO"}');
-      FileLogger.log('   User data found: ${userJson != null ? "YES" : "NO"}');
-      
       if (accessToken != null && refreshToken != null && userJson != null) {
-        FileLogger.log('   ✅ All tokens found - user is logged in');
         ref.read(accessTokenProvider.notifier).state = accessToken;
         ref.read(refreshTokenProvider.notifier).state = refreshToken;
-        FileLogger.log('   ✅ Tokens loaded into provider state');
         
         try {
           final userData = jsonDecode(userJson);
@@ -216,61 +179,33 @@ class AuthController extends StateNotifier<AuthState> {
             supplierId: userData['supplierId'],
           );
           
-          FileLogger.log('   👤 User loaded:');
-          FileLogger.log('      User ID: ${user.id}');
-          FileLogger.log('      User name: ${user.name}');
-          
           state = state.copyWith(
             isLoading: false,
             isInitialized: true,
             user: user,
           );
           
-          // Send FCM token to backend with user ID if user is already logged in
-          FileLogger.log('   📤 Attempting to send FCM token to backend...');
+          // Send FCM token to backend if user is already logged in
           try {
             final fcmToken = await FirebaseMessaging.instance.getToken();
-            FileLogger.log('   🔑 FCM token retrieved: ${fcmToken != null ? "YES (${fcmToken.length} chars)" : "NO"}');
-            
             if (fcmToken != null && user.id.isNotEmpty) {
-              FileLogger.log('   📤 Calling sendTokenToBackend...');
-              FileLogger.log('      FCM Token (FULL): $fcmToken');
-              FileLogger.log('      Token length: ${fcmToken.length} characters');
-              FileLogger.log('      User ID: ${user.id}');
-              
-              final success = await FirebaseService.sendTokenToBackend(fcmToken, user.id);
-              if (success) {
-                FileLogger.log('✅ FCM token sent to backend after loading stored tokens for user: ${user.id}');
-              } else {
-                FileLogger.log('⚠️ Failed to send FCM token to backend after loading stored tokens');
-              }
-            } else {
-              FileLogger.log('⚠️ Cannot send FCM token: fcmToken=${fcmToken != null}, userId=${user.id.isNotEmpty}');
+              await FirebaseService.sendTokenToBackend(fcmToken, user.id);
             }
-          } catch (e, stackTrace) {
-            FileLogger.log('❌ Error sending FCM token after loading stored tokens: $e');
-            FileLogger.log('   Stack trace: $stackTrace');
+          } catch (e) {
             // Don't fail token loading if FCM token send fails
           }
-        } catch (e, stackTrace) {
-          FileLogger.log('❌ Error decoding user data: $e');
-          FileLogger.log('   Stack trace: $stackTrace');
+        } catch (e) {
           // If we can't restore user data, clear tokens
           await logout();
         }
       } else {
-        FileLogger.log('   ⚠️ No stored tokens found - user is not logged in');
-        // No stored tokens, user is not logged in
         state = state.copyWith(
           isLoading: false,
           isInitialized: true,
           user: null,
         );
       }
-    } catch (e, stackTrace) {
-      FileLogger.log('❌ Error loading tokens: $e');
-      FileLogger.log('   Stack trace: $stackTrace');
-      // Error loading tokens, clear everything
+    } catch (e) {
       state = state.copyWith(
         isLoading: false,
         isInitialized: true,
@@ -278,7 +213,6 @@ class AuthController extends StateNotifier<AuthState> {
         error: e.toString(),
       );
     }
-    FileLogger.log('========== END LOADING STORED TOKENS ==========');
   }
 
   /// Sync tokens from WebView login (when user logs in via web page)
@@ -286,35 +220,21 @@ class AuthController extends StateNotifier<AuthState> {
     required String accessToken,
     String? refreshToken,
   }) async {
-    FileLogger.log('🌐 ========== SYNC TOKENS FROM WEBVIEW ==========');
-    FileLogger.log('   Access token received: ${accessToken.isNotEmpty ? "YES (${accessToken.length} chars)" : "NO"}');
-    FileLogger.log('   Refresh token received: ${refreshToken != null && refreshToken.isNotEmpty ? "YES (${refreshToken.length} chars)" : "NO"}');
-    
     try {
-      // Update provider state
       ref.read(accessTokenProvider.notifier).state = accessToken;
       if (refreshToken != null && refreshToken.isNotEmpty) {
         ref.read(refreshTokenProvider.notifier).state = refreshToken;
       }
-      FileLogger.log('   ✅ Tokens stored in provider state');
       
-      // Store in secure storage
       final storage = ref.read(secureStorageProvider);
       await storage.write(key: 'access_token', value: accessToken);
       if (refreshToken != null && refreshToken.isNotEmpty) {
         await storage.write(key: 'refresh_token', value: refreshToken);
       }
-      FileLogger.log('   ✅ Tokens stored in secure storage');
       
-      // Try to extract user info from token
       try {
-        FileLogger.log('   🔍 Decoding user info from token...');
         final tokenPayload = JwtUtils.decodeToken(accessToken);
         if (tokenPayload != null) {
-          FileLogger.log('   ✅ Token decoded successfully');
-          
-          // Try to create user entity from token payload
-          // Note: Token might not have all user fields, so we use what's available
           int? supplierId;
           if (tokenPayload['supplierId'] != null) {
             final supplierIdValue = tokenPayload['supplierId'];
@@ -336,12 +256,6 @@ class AuthController extends StateNotifier<AuthState> {
             supplierId: supplierId,
           );
           
-          FileLogger.log('   👤 User extracted from token:');
-          FileLogger.log('      User ID: ${user.id}');
-          FileLogger.log('      User name: ${user.name}');
-          FileLogger.log('      User role: ${user.role}');
-          
-          // Store user data
           await storage.write(key: 'user_data', value: jsonEncode({
             'id': user.id,
             'name': user.name,
@@ -352,64 +266,35 @@ class AuthController extends StateNotifier<AuthState> {
             'address': user.address,
             'supplierId': user.supplierId,
           }));
-          FileLogger.log('   ✅ User data stored');
           
-          // Update state with user
           state = state.copyWith(
             isInitialized: true,
             user: user,
           );
-          FileLogger.log('   ✅ Auth state updated with user');
           
-          // Send FCM token to backend with user ID after WebView login
-          FileLogger.log('   📤 Attempting to send FCM token to backend...');
+          // Send FCM token to backend after WebView login
           try {
             final fcmToken = await FirebaseMessaging.instance.getToken();
-            FileLogger.log('   🔑 FCM token retrieved: ${fcmToken != null ? "YES (${fcmToken.length} chars)" : "NO"}');
-            
             if (fcmToken != null && user.id.isNotEmpty) {
-              FileLogger.log('   📤 Calling sendTokenToBackend...');
-              FileLogger.log('      FCM Token: $fcmToken');
-              FileLogger.log('      User ID: ${user.id}');
-              
-              final success = await FirebaseService.sendTokenToBackend(fcmToken, user.id);
-              if (success) {
-                FileLogger.log('✅ FCM token sent to backend after WebView login for user: ${user.id}');
-              } else {
-                FileLogger.log('⚠️ Failed to send FCM token to backend after WebView login');
-              }
-            } else {
-              FileLogger.log('⚠️ Cannot send FCM token: fcmToken=${fcmToken != null}, userId=${user.id.isNotEmpty}');
+              await FirebaseService.sendTokenToBackend(fcmToken, user.id);
             }
-          } catch (e, stackTrace) {
-            FileLogger.log('❌ Error sending FCM token after WebView login: $e');
-            FileLogger.log('   Stack trace: $stackTrace');
+          } catch (e) {
             // Don't fail sync if FCM token send fails
           }
         } else {
-          FileLogger.log('⚠️ Could not decode token payload - token is null');
-          // Can't decode token, but tokens are stored
-          // User will be loaded on next app restart if backend provides user info
           state = state.copyWith(
             isInitialized: true,
             user: null,
           );
         }
-      } catch (e, stackTrace) {
-        // Can't decode token, but tokens are stored
-        FileLogger.log('❌ Error decoding user info from token: $e');
-        FileLogger.log('   Stack trace: $stackTrace');
+      } catch (e) {
         state = state.copyWith(
           isInitialized: true,
           user: null,
         );
       }
-      
-      FileLogger.log('✅ Tokens synced from WebView successfully');
-    } catch (e, stackTrace) {
-      FileLogger.log('❌ Error syncing tokens from WebView: $e');
-      FileLogger.log('   Stack trace: $stackTrace');
+    } catch (e) {
+      // Ignore sync errors
     }
-    FileLogger.log('========== END SYNC TOKENS FROM WEBVIEW ==========');
   }
 }

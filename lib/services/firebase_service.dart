@@ -55,46 +55,54 @@ class FirebaseService {
 
   static Future<bool> sendTokenToBackend(
       String token, String userId) async {
-    FileLogger.log('📤 Sending FCM token...');
-    FileLogger.log('Token length: ${token.length}');
-
     if (_dio == null) return false;
 
-    /// ❌ STOP INVALID TOKEN HERE
     if (!_isValidFcmToken(token)) {
-      FileLogger.log('❌ INVALID FCM TOKEN — NOT SENDING');
       return false;
     }
 
     if (await _hasTokenBeenSent(token, userId)) {
-      FileLogger.log('⏭️ Token already sent');
       return true;
     }
 
     final accessToken = await _storage.read(key: 'access_token');
-
-    FileLogger.log('❌ accessToken— ${accessToken}');
-    final response = await _dio!.put(
-      BasoodEndpoints.user.registerFcmToken,
-      data: {
-        'FcmToken': token,
-        'userId': userId,
-      },
-      options: Options(
-        headers: {
-          'Authorization': 'Bearer $accessToken',
-          'Content-Type': 'application/json',
+    final endpoint = BasoodEndpoints.user.registerFcmToken;
+    final baseUrl = _dio!.options.baseUrl;
+    final fullUrl = '$baseUrl$endpoint';
+    
+    FileLogger.log('📤 Sending FCM token to backend: $fullUrl');
+    FileLogger.log('   Method: PUT');
+    FileLogger.log('   UserId: $userId');
+    FileLogger.log('   FCM Token: $token');
+    
+    try {
+      final response = await _dio!.put(
+        endpoint,
+        data: {
+          'FcmToken': token,
+          'userId': userId,
         },
-      ),
-    );
-    FileLogger.log('❌ accessToken— ${response}');
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $accessToken',
+            'Content-Type': 'application/json',
+          },
+        ),
+      );
 
-    if (response.statusCode! >= 200 && response.statusCode! < 300) {
-      await _markTokenAsSent(token, userId);
-      return true;
+      if (response.statusCode! >= 200 && response.statusCode! < 300) {
+        FileLogger.log('✅ FCM token sent successfully to backend: $fullUrl');
+        FileLogger.log('   Response status: ${response.statusCode}');
+        await _markTokenAsSent(token, userId);
+        return true;
+      }
+
+      FileLogger.log('❌ FCM token send failed - Status: ${response.statusCode}');
+      return false;
+    } catch (e) {
+      FileLogger.log('❌ FCM token send error: $e');
+      return false;
     }
-
-    return false;
   }
 
   static Future<void> initialize({required Dio dio}) async {
@@ -111,15 +119,9 @@ class FirebaseService {
     FirebaseMessaging.onBackgroundMessage(
         firebaseMessagingBackgroundHandler);
 
-    /// 🔑 GET TOKEN (SAFE)
-    final token = await _fcm.getToken();
-    if (token != null) {
-      FileLogger.log('FCM TOKEN READY: $token');
-    }
+    await _fcm.getToken();
 
-    /// 🔄 TOKEN REFRESH (FIXED)
     _fcm.onTokenRefresh.listen((newToken) async {
-      FileLogger.log('🔄 Token refreshed');
       if (!_isValidFcmToken(newToken)) return;
 
       final userId = await _storage.read(key: 'user_id');
