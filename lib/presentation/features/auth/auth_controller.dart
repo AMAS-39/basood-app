@@ -77,7 +77,7 @@ class AuthController extends StateNotifier<AuthState> {
     });
   }
 
-  Future<void> login({
+  Future<void> loginCC({
     required String username,
     required String password,
   }) async {

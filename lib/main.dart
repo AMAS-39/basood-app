@@ -9,22 +9,13 @@ import 'core/utils/file_logger.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize file logger first
   await FileLogger.init();
-  await FileLogger.log('🚀 ========== APP STARTING ==========');
-  
-  // Register background message handler before Firebase initialization
-  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-  await FileLogger.log('✅ Background message handler registered');
-  
-  // Initialize Firebase and Notification Service in parallel for better performance
-  await FileLogger.log('📦 Initializing Firebase and Notification Service...');
-  await Future.wait([
-    Firebase.initializeApp(),
-    NotificationService.instance.init(),
-  ]);
-  await FileLogger.log('✅ Firebase and Notification Service initialized');
+
+  FirebaseMessaging.onBackgroundMessage(
+      firebaseMessagingBackgroundHandler);
+
+  await Firebase.initializeApp();
+  await NotificationService.instance.init();
 
   runApp(
     const ProviderScope(

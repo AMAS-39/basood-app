@@ -115,7 +115,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   isLoading: authState.isLoading,
                   onPressed: () {
                     if (_formKey.currentState!.validate()) {
-                      ref.read(authControllerProvider.notifier).login(
+                      ref.read(authControllerProvider.notifier).loginCC(
                         username: _usernameController.text.trim(),
                         password: _passwordController.text,
                       );
