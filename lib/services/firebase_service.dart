@@ -2,6 +2,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'dart:convert';
 import '../core/config/api_endpoints.dart';
 import 'notification_service.dart';
 import '../core/utils/file_logger.dart';
@@ -55,17 +56,32 @@ class FirebaseService {
 
   static Future<bool> sendTokenToBackend(
       String token, String userId) async {
-    if (_dio == null) return false;
-
-    if (!_isValidFcmToken(token)) {
+    FileLogger.log('🔍 ========== sendTokenToBackend CALLED ==========');
+    FileLogger.log('   UserId: $userId');
+    FileLogger.log('   Token length: ${token.length}');
+    FileLogger.log('   Dio initialized: ${_dio != null}');
+    
+    if (_dio == null) {
+      FileLogger.log('❌ Cannot send FCM token - Dio is null (not initialized)');
       return false;
     }
 
-    if (await _hasTokenBeenSent(token, userId)) {
+    if (!_isValidFcmToken(token)) {
+      FileLogger.log('❌ Cannot send FCM token - Invalid token');
+      FileLogger.log('   Token length: ${token.length} (needs > 120)');
+      FileLogger.log('   Contains ":": ${token.contains(':')}');
+      return false;
+    }
+
+    final alreadySent = await _hasTokenBeenSent(token, userId);
+    if (alreadySent) {
+      FileLogger.log('⏭️ FCM token already sent for this user - skipping');
       return true;
     }
 
     final accessToken = await _storage.read(key: 'access_token');
+    FileLogger.log('   Access token available: ${accessToken != null}');
+    
     final endpoint = BasoodEndpoints.user.registerFcmToken;
     final baseUrl = _dio!.options.baseUrl;
     final fullUrl = '$baseUrl$endpoint';
@@ -74,6 +90,7 @@ class FirebaseService {
     FileLogger.log('   Method: PUT');
     FileLogger.log('   UserId: $userId');
     FileLogger.log('   FCM Token: $token');
+    FileLogger.log('   Payload: {FcmToken: $token, userId: $userId}');
     
     try {
       final response = await _dio!.put(
@@ -93,20 +110,38 @@ class FirebaseService {
       if (response.statusCode! >= 200 && response.statusCode! < 300) {
         FileLogger.log('✅ FCM token sent successfully to backend: $fullUrl');
         FileLogger.log('   Response status: ${response.statusCode}');
+        FileLogger.log('   Response data: ${response.data}');
         await _markTokenAsSent(token, userId);
+        FileLogger.log('========== FCM TOKEN SEND COMPLETE ==========');
         return true;
       }
 
       FileLogger.log('❌ FCM token send failed - Status: ${response.statusCode}');
+      FileLogger.log('   Response data: ${response.data}');
+      FileLogger.log('========== FCM TOKEN SEND FAILED ==========');
       return false;
     } catch (e) {
-      FileLogger.log('❌ FCM token send error: $e');
+      if (e is DioException) {
+        FileLogger.log('❌ FCM token send error (DioException):');
+        FileLogger.log('   Type: ${e.type}');
+        FileLogger.log('   Status: ${e.response?.statusCode}');
+        FileLogger.log('   Message: ${e.message}');
+        FileLogger.log('   Response data: ${e.response?.data}');
+      } else {
+        FileLogger.log('❌ FCM token send error: $e');
+      }
+      FileLogger.log('========== FCM TOKEN SEND ERROR ==========');
       return false;
     }
   }
 
   static Future<void> initialize({required Dio dio}) async {
+    FileLogger.log('🔥 Initializing FirebaseService...');
     setDio(dio);
+    FileLogger.log('   Dio instance set: ${_dio != null}');
+    if (_dio != null) {
+      FileLogger.log('   Dio baseUrl: ${_dio!.options.baseUrl}');
+    }
 
     await NotificationService.instance.init();
 
@@ -122,12 +157,30 @@ class FirebaseService {
     await _fcm.getToken();
 
     _fcm.onTokenRefresh.listen((newToken) async {
-      if (!_isValidFcmToken(newToken)) return;
+      FileLogger.log('🔄 FCM Token refreshed');
+      if (!_isValidFcmToken(newToken)) {
+        FileLogger.log('   Invalid token - not sending');
+        return;
+      }
 
-      final userId = await _storage.read(key: 'user_id');
-      if (userId != null) {
-        await clearTokenSentFlag(userId);
-        await sendTokenToBackend(newToken, userId);
+      // Get userId from user_data JSON (not from separate user_id key)
+      final userJson = await _storage.read(key: 'user_data');
+      if (userJson != null) {
+        try {
+          final userData = jsonDecode(userJson);
+          final userId = userData['id']?.toString();
+          if (userId != null && userId.isNotEmpty) {
+            FileLogger.log('   UserId found in user_data: $userId');
+            await clearTokenSentFlag(userId);
+            await sendTokenToBackend(newToken, userId);
+          } else {
+            FileLogger.log('   UserId not found in user_data JSON');
+          }
+        } catch (e) {
+          FileLogger.log('   Error parsing user_data: $e');
+        }
+      } else {
+        FileLogger.log('   No user_data found - user not logged in');
       }
     });
 

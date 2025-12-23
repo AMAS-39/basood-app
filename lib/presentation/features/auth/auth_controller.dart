@@ -7,6 +7,7 @@ import '../../providers/use_case_providers.dart';
 import '../../providers/di_providers.dart';
 import '../../../services/firebase_service.dart';
 import '../../../core/utils/jwt_utils.dart';
+import '../../../core/utils/file_logger.dart';
 
 final authControllerProvider = StateNotifierProvider<AuthController, AuthState>((ref) {
   return AuthController(ref);
@@ -96,12 +97,21 @@ class AuthController extends StateNotifier<AuthState> {
       }));
       
       // Send FCM token to backend after successful login
+      FileLogger.log('🔐 Login successful - Preparing to send FCM token');
       try {
         final fcmToken = await FirebaseMessaging.instance.getToken();
+        FileLogger.log('   FCM token retrieved: ${fcmToken != null}');
+        FileLogger.log('   User ID: ${user.id}');
+        FileLogger.log('   User ID is not empty: ${user.id.isNotEmpty}');
+        
         if (fcmToken != null && user.id.isNotEmpty) {
+          FileLogger.log('   ✅ Calling sendTokenToBackend...');
           await FirebaseService.sendTokenToBackend(fcmToken, user.id);
+        } else {
+          FileLogger.log('   ⚠️ Cannot send FCM token - token: ${fcmToken != null}, userId: ${user.id.isNotEmpty}');
         }
       } catch (e) {
+        FileLogger.log('   ❌ Error in FCM token send flow: $e');
         // Don't fail login if FCM token send fails
       }
       
@@ -186,12 +196,20 @@ class AuthController extends StateNotifier<AuthState> {
           );
           
           // Send FCM token to backend if user is already logged in
+          FileLogger.log('   🔄 Loading stored tokens - Preparing to send FCM token');
           try {
             final fcmToken = await FirebaseMessaging.instance.getToken();
+            FileLogger.log('   FCM token retrieved: ${fcmToken != null}');
+            FileLogger.log('   User ID: ${user.id}');
+            
             if (fcmToken != null && user.id.isNotEmpty) {
+              FileLogger.log('   ✅ Calling sendTokenToBackend...');
               await FirebaseService.sendTokenToBackend(fcmToken, user.id);
+            } else {
+              FileLogger.log('   ⚠️ Cannot send FCM token - token: ${fcmToken != null}, userId: ${user.id.isNotEmpty}');
             }
           } catch (e) {
+            FileLogger.log('   ❌ Error in FCM token send flow: $e');
             // Don't fail token loading if FCM token send fails
           }
         } catch (e) {
@@ -273,12 +291,20 @@ class AuthController extends StateNotifier<AuthState> {
           );
           
           // Send FCM token to backend after WebView login
+          FileLogger.log('   🌐 WebView login - Preparing to send FCM token');
           try {
             final fcmToken = await FirebaseMessaging.instance.getToken();
+            FileLogger.log('   FCM token retrieved: ${fcmToken != null}');
+            FileLogger.log('   User ID: ${user.id}');
+            
             if (fcmToken != null && user.id.isNotEmpty) {
+              FileLogger.log('   ✅ Calling sendTokenToBackend...');
               await FirebaseService.sendTokenToBackend(fcmToken, user.id);
+            } else {
+              FileLogger.log('   ⚠️ Cannot send FCM token - token: ${fcmToken != null}, userId: ${user.id.isNotEmpty}');
             }
           } catch (e) {
+            FileLogger.log('   ❌ Error in FCM token send flow: $e');
             // Don't fail sync if FCM token send fails
           }
         } else {
