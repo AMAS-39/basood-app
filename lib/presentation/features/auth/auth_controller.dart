@@ -225,6 +225,7 @@ class AuthController extends StateNotifier<AuthState> {
         }
       } else {
         FileLogger.log('   ⚠️ No stored tokens found - User is NOT logged in');
+        FileLogger.log('   ℹ️ FCM token will be sent after user logs in');
         state = state.copyWith(
           isLoading: false,
           isInitialized: true,

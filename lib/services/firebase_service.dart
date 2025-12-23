@@ -141,6 +141,7 @@ class FirebaseService {
     FileLogger.log('   Dio instance set: ${_dio != null}');
     if (_dio != null) {
       FileLogger.log('   Dio baseUrl: ${_dio!.options.baseUrl}');
+      FileLogger.log('   ✅ FirebaseService initialized - Ready to send FCM tokens');
     }
 
     await NotificationService.instance.init();
