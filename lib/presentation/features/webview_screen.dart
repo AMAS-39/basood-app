@@ -1,9 +1,13 @@
-import 'dart:convert';
+import 'dart:async';
+
+import 'package:dio/dio.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:permission_handler/permission_handler.dart';
+
 import '../../core/config/env.dart';
-import '../../core/utils/file_logger.dart';
+import '../../core/config/api_endpoints.dart';
 import '../../services/notification_service.dart';
 
 class WebViewScreen extends StatefulWidget {
@@ -17,16 +21,29 @@ class _WebViewScreenState extends State<WebViewScreen> {
   InAppWebViewController? _controller;
   PullToRefreshController? _refresh;
 
+  final FirebaseMessaging _fcm = FirebaseMessaging.instance;
+  late final Dio _dio;
+
   bool _loading = true;
-  bool _error = false;
-  String? _errorMsg;
+  bool _fcmSent = false;
+  StreamSubscription<String>? _fcmRefreshSub;
 
   late final String _loginUrl;
 
   @override
   void initState() {
     super.initState();
+
     _loginUrl = '${Env.webBaseUrl}/login';
+
+    _dio = Dio(
+      BaseOptions(
+        baseUrl: Env.baseUrl,
+        connectTimeout: const Duration(seconds: 30),
+        receiveTimeout: const Duration(seconds: 30),
+        sendTimeout: const Duration(seconds: 30),
+      ),
+    );
 
     _refresh = PullToRefreshController(
       onRefresh: () => _controller?.reload(),
@@ -38,87 +55,94 @@ class _WebViewScreenState extends State<WebViewScreen> {
   Future<void> _requestPermissions() async {
     await Permission.camera.request();
     await Permission.microphone.request();
+    await _fcm.requestPermission();
   }
 
   // ================= LOGIN INTERCEPTOR =================
   Future<void> _injectLoginInterceptorJS() async {
     const js = """
     (function () {
-
-      function sendToFlutter(json) {
-        if (json && json.token) {
-          window.flutter_inappwebview.callHandler('loginData', {
-            token: json.token,
-            fcmToken: json.user && json.user.fcmToken ? json.user.fcmToken : null
-          });
+      function send(token) {
+        if (token) {
+          window.flutter_inappwebview.callHandler('loginData', token);
         }
       }
 
-      // FETCH
       const oldFetch = window.fetch;
       window.fetch = function(input, init) {
         const url = typeof input === 'string' ? input : input.url;
         return oldFetch(input, init).then(res => {
           if (url.includes('/user/login')) {
-            res.clone().text().then(body => {
-              try { sendToFlutter(JSON.parse(body)); } catch(e){}
-            });
+            res.clone().json().then(d => send(d.token)).catch(()=>{});
           }
           return res;
         });
       };
 
-      // XHR
       const OldXHR = window.XMLHttpRequest;
-      function NewXHR() {
+      window.XMLHttpRequest = function() {
         const xhr = new OldXHR();
         xhr.addEventListener('load', function() {
           if (this.responseURL.includes('/user/login')) {
-            try { sendToFlutter(JSON.parse(this.responseText)); } catch(e){}
+            try {
+              const d = JSON.parse(this.responseText);
+              send(d.token);
+            } catch(e){}
           }
         });
         return xhr;
-      }
-      window.XMLHttpRequest = NewXHR;
+      };
     })();
     """;
 
     await _controller?.evaluateJavascript(source: js);
-    FileLogger.log('✅ Login interceptor injected');
   }
 
-  // ================= SEND FCM TO API =================
+  // ================= FCM REGISTER =================
   Future<void> _sendFcmToApi(String jwtToken) async {
-    final deviceFcm = await "Token FCM here ahmed";
+    if (_fcmSent) return;
+    _fcmSent = true;
 
-    if (deviceFcm == null) {
-      FileLogger.log('❌ Device FCM token is NULL');
-      return;
-    }
+    final fcmToken = await _fcm.getToken();
+    if (fcmToken == null || fcmToken.isEmpty) return;
 
-    FileLogger.log('📡 Sending FCM to API');
-    FileLogger.log('JWT: $jwtToken');
-    FileLogger.log('FCM: $deviceFcm');
+    // save locally for notifications
+    await NotificationService.instance.saveFcmToken(fcmToken);
 
-    // TODO: replace with your real API call
-    /*
-    await dio.post(
-      '/user/FcmToken',
-      data: {'fcmToken': deviceFcm},
-      options: Options(headers: {
-        'Authorization': 'Bearer $jwtToken'
-      }),
+    await _dio.put(
+      BasoodEndpoints.user.registerFcmToken,
+      data: {'fcmToken': fcmToken},
+      options: Options(
+        headers: {
+          'Authorization': 'Bearer $jwtToken',
+          'Content-Type': 'application/json',
+        },
+      ),
     );
-    */
 
-    FileLogger.log('✅ FCM sent to backend');
+    // listen once for refresh
+    _fcmRefreshSub ??= _fcm.onTokenRefresh.listen((newToken) async {
+      if (newToken.isEmpty) return;
+
+      await NotificationService.instance.saveFcmToken(newToken);
+
+      await _dio.put(
+        BasoodEndpoints.user.registerFcmToken,
+        data: {'fcmToken': newToken},
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $jwtToken',
+            'Content-Type': 'application/json',
+          },
+        ),
+      );
+    });
   }
 
   // ================= UI =================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      floatingActionButton: _debugButton(),
       body: SafeArea(
         child: Stack(
           children: [
@@ -138,26 +162,12 @@ class _WebViewScreenState extends State<WebViewScreen> {
                   handlerName: 'loginData',
                   callback: (args) async {
                     if (args.isEmpty) return;
-
-                    final data = Map<String, dynamic>.from(args[0]);
-
-                    final token = data['token'];
-                    final fcm = data['fcmToken'];
-
-                    FileLogger.log('🔑 LOGIN TOKEN: $token');
-                    FileLogger.log('📱 SERVER FCM: $fcm');
-
-                    if (token != null) {
-                      await _sendFcmToApi(token);
-                    }
+                    await _sendFcmToApi(args[0]);
                   },
                 );
               },
               onLoadStart: (_, __) {
-                setState(() {
-                  _loading = true;
-                  _error = false;
-                });
+                setState(() => _loading = true);
               },
               onLoadStop: (_, url) async {
                 _refresh?.endRefreshing();
@@ -167,78 +177,24 @@ class _WebViewScreenState extends State<WebViewScreen> {
                   await _injectLoginInterceptorJS();
                 }
               },
-              onReceivedError: (_, __, err) {
-                FileLogger.log('❌ WebView error: ${err.description}');
-                setState(() {
-                  _loading = false;
-                  _error = true;
-                  _errorMsg = err.description;
-                });
-              },
               androidOnPermissionRequest: (_, __, res) async =>
                   PermissionRequestResponse(
                     resources: res,
                     action: PermissionRequestResponseAction.GRANT,
                   ),
-              onReceivedServerTrustAuthRequest: (_, __) async =>
-                  ServerTrustAuthResponse(
-                    action: ServerTrustAuthResponseAction.PROCEED,
-                  ),
             ),
 
             if (_loading)
               const Center(child: CircularProgressIndicator()),
-
-            if (_error)
-              Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.wifi_off, size: 64),
-                    const SizedBox(height: 12),
-                    Text(_errorMsg ?? 'Network error'),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      onPressed: () => _controller?.reload(),
-                      child: const Text('Retry'),
-                    )
-                  ],
-                ),
-              ),
           ],
         ),
       ),
     );
   }
 
-  // ================= DEBUG BUTTON =================
-  Widget _debugButton() {
-    return FloatingActionButton(
-      mini: true,
-      child: const Icon(Icons.bug_report),
-      onPressed: () async {
-        final logs = await FileLogger.getAllLogs();
-        if (!mounted) return;
-
-        showDialog(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('Debug Logs'),
-            content: SingleChildScrollView(
-              child: SelectableText(
-                logs.isEmpty ? 'No logs' : logs,
-                style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Close'),
-              )
-            ],
-          ),
-        );
-      },
-    );
+  @override
+  void dispose() {
+    _fcmRefreshSub?.cancel();
+    super.dispose();
   }
 }

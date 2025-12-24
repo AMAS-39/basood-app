@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'theme/app_theme.dart';
 import 'features/splash_screen.dart';
-import '../services/firebase_service.dart';
 import '../services/notification_service.dart';
 import 'providers/di_providers.dart';
 
@@ -48,7 +47,6 @@ class _SupplyGoAppState extends ConsumerState<SupplyGoApp> {
         Future.microtask(() async {
           try {
             final dio = ref.read(dioProvider);
-            await FirebaseService.initialize(dio: dio);
           } catch (e) {
             debugPrint('⚠️ Error initializing Firebase service: $e');
           }

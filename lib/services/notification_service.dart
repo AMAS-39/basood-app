@@ -11,9 +11,26 @@ class NotificationService {
 
   bool _initialized = false;
 
-  static final Set<String> _shownNotificationIds = {};
-  static GlobalKey<NavigatorState>? navigatorKey;
+  // ================= FCM STORAGE =================
+  String? _fcmToken;
+  String? get fcmToken => _fcmToken;
 
+  Future<void> saveFcmToken(String token) async {
+    _fcmToken = token;
+  }
+
+  // ================= NAVIGATION =================
+  static GlobalKey<NavigatorState>? navigatorKey;
+  static VoidCallback? _onNotificationTapped;
+
+  static void setNotificationTapCallback(VoidCallback? callback) {
+    _onNotificationTapped = callback;
+  }
+
+  // ================= DUPLICATE PROTECTION =================
+  static final Set<String> _shownNotificationIds = {};
+
+  // ================= CHANNEL =================
   static const AndroidNotificationChannel _defaultChannel =
   AndroidNotificationChannel(
     'basood_notifications',
@@ -24,10 +41,12 @@ class NotificationService {
     enableVibration: true,
   );
 
+  // ================= INIT =================
   Future<void> init() async {
     if (_initialized) return;
 
-    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const androidSettings =
+    AndroidInitializationSettings('@mipmap/ic_launcher');
     const darwinSettings = DarwinInitializationSettings();
 
     const initSettings = InitializationSettings(
@@ -49,6 +68,7 @@ class NotificationService {
     _initialized = true;
   }
 
+  // ================= SHOW NOTIFICATION =================
   Future<void> showRemoteMessage(RemoteMessage message) async {
     if (!_initialized) await init();
 
@@ -58,9 +78,9 @@ class NotificationService {
     if (_shownNotificationIds.contains(messageId)) return;
     _shownNotificationIds.add(messageId);
 
-    final title = message.notification?.title ??
-        message.data['title'] ??
-        'Basood';
+    final title =
+        message.notification?.title ?? message.data['title'] ?? 'Basood';
+
     final body = message.notification?.body ??
         message.data['body'] ??
         'New notification';
@@ -99,17 +119,12 @@ class NotificationService {
     );
   }
 
+  // ================= NOTIFICATION TAP =================
   void handleNotificationTap(RemoteMessage message) {
     _onNotificationTapped?.call();
   }
 
-  static VoidCallback? _onNotificationTapped;
-
-  static void setNotificationTapCallback(VoidCallback? callback) {
-    _onNotificationTapped = callback;
-  }
-
   void _handleNotificationResponse(NotificationResponse response) {
-    // Handle notification tap
+    _onNotificationTapped?.call();
   }
 }
