@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'auth/auth_controller.dart';
@@ -22,34 +23,45 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
   }
 
   Future<void> _initializeApp() async {
-    // Load stored tokens and restore auth state
-    await ref.read(authControllerProvider.notifier).loadStoredTokens();
-    
+    try {
+      // Load stored tokens and restore auth state with timeout
+      debugPrint('🔄 Loading stored tokens...');
+      await ref
+          .read(authControllerProvider.notifier)
+          .loadStoredTokens()
+          .timeout(
+            const Duration(seconds: 5),
+            onTimeout: () {
+              debugPrint('⚠️ Token loading timed out, continuing anyway');
+            },
+          );
+      debugPrint('✅ Token loading completed');
+    } catch (e) {
+      debugPrint('❌ Error loading tokens: $e');
+      // Continue anyway - WebView will handle authentication
+    }
+
     // Wait minimum splash time (1 second)
     await Future.delayed(const Duration(seconds: 1));
-    
+
     if (!mounted) return;
-    
-    // Check auth state and navigate accordingly
-    final authState = ref.read(authControllerProvider);
-    
-    if (authState.isInitialized) {
-      // Navigate to WebViewScreen (it will handle showing login page if not authenticated)
+
+    // Always navigate to WebViewScreen, even if initialization failed
+    // WebViewScreen will handle showing the appropriate page
+    try {
+      final authState = ref.read(authControllerProvider);
+
       if (mounted) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => const WebViewScreen(),
-          ),
+          MaterialPageRoute(builder: (context) => const WebViewScreen()),
         );
       }
-    } else {
-      // Still loading, wait a bit more
-      await Future.delayed(const Duration(milliseconds: 500));
+    } catch (e) {
+      debugPrint('❌ Error reading auth state: $e');
+      // Navigate anyway - WebView will show login page
       if (mounted) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => const WebViewScreen(),
-          ),
+          MaterialPageRoute(builder: (context) => const WebViewScreen()),
         );
       }
     }
@@ -69,11 +81,28 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
               width: 200,
               height: 200,
               fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) {
+                // If image fails to load, show a placeholder
+                debugPrint('⚠️ Error loading logo: $error');
+                return Container(
+                  width: 200,
+                  height: 200,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Icon(
+                    Icons.shopping_bag,
+                    size: 100,
+                    color: Colors.white,
+                  ),
+                );
+              },
             ),
             const SizedBox(height: 30),
             // App Name
             Text(
-              'Basood',
+              'Basood Post',
               style: TextStyle(
                 fontSize: 32,
                 fontWeight: FontWeight.bold,

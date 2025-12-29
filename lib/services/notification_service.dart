@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'dart:io';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 class NotificationService {
   NotificationService._();
   static final NotificationService instance = NotificationService._();
 
   final FlutterLocalNotificationsPlugin _plugin =
-  FlutterLocalNotificationsPlugin();
+      FlutterLocalNotificationsPlugin();
 
   bool _initialized = false;
 
@@ -32,21 +34,22 @@ class NotificationService {
 
   // ================= CHANNEL =================
   static const AndroidNotificationChannel _defaultChannel =
-  AndroidNotificationChannel(
-    'basood_notifications',
-    'Basood Notifications',
-    description: 'General alerts and updates from Basood',
-    importance: Importance.high,
-    playSound: true,
-    enableVibration: true,
-  );
+      AndroidNotificationChannel(
+        'basood_notifications',
+        'Basood Notifications',
+        description: 'General alerts and updates from Basood',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: true,
+      );
 
   // ================= INIT =================
   Future<void> init() async {
     if (_initialized) return;
 
-    const androidSettings =
-    AndroidInitializationSettings('@mipmap/ic_launcher');
+    const androidSettings = AndroidInitializationSettings(
+      '@mipmap/ic_launcher',
+    );
     const darwinSettings = DarwinInitializationSettings();
 
     const initSettings = InitializationSettings(
@@ -62,10 +65,36 @@ class NotificationService {
 
     await _plugin
         .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>()
+          AndroidFlutterLocalNotificationsPlugin
+        >()
         ?.createNotificationChannel(_defaultChannel);
 
     _initialized = true;
+    if (Platform.isIOS) {
+      final iosPlugin = _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >();
+      await iosPlugin?.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+    }
+
+    final messaging = FirebaseMessaging.instance;
+
+    await messaging.requestPermission(alert: true, badge: true, sound: true);
+
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      showRemoteMessage(message);
+    });
+
+    // Get token (required for backend)
+    final token = await messaging.getToken();
+    if (token != null) {
+      await saveFcmToken(token);
+    }
   }
 
   // ================= SHOW NOTIFICATION =================
@@ -81,7 +110,8 @@ class NotificationService {
     final title =
         message.notification?.title ?? message.data['title'] ?? 'Basood';
 
-    final body = message.notification?.body ??
+    final body =
+        message.notification?.body ??
         message.data['body'] ??
         'New notification';
 
@@ -94,8 +124,7 @@ class NotificationService {
       playSound: true,
       enableVibration: true,
       icon: '@mipmap/ic_launcher',
-      largeIcon:
-      const DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
+      largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
 
     const darwinDetails = DarwinNotificationDetails(

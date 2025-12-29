@@ -4,6 +4,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'theme/app_theme.dart';
 import 'features/splash_screen.dart';
 import '../services/notification_service.dart';
+import '../services/firebase_service.dart';
 import 'providers/di_providers.dart';
 
 // Global navigator key for notification handling
@@ -18,11 +19,11 @@ class SupplyGoApp extends ConsumerStatefulWidget {
 
 class _SupplyGoAppState extends ConsumerState<SupplyGoApp> {
   bool _firebaseInitialized = false;
-  
+
   @override
   void initState() {
     super.initState();
-    
+
     // Configure status bar
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(
@@ -33,7 +34,7 @@ class _SupplyGoAppState extends ConsumerState<SupplyGoApp> {
         systemNavigationBarIconBrightness: Brightness.dark,
       ),
     );
-    
+
     // Set navigator key for notification service
     NotificationService.navigatorKey = navigatorKey;
   }
@@ -47,6 +48,7 @@ class _SupplyGoAppState extends ConsumerState<SupplyGoApp> {
         Future.microtask(() async {
           try {
             final dio = ref.read(dioProvider);
+            FirebaseService.initialize(dio: dio);
           } catch (e) {
             debugPrint('⚠️ Error initializing Firebase service: $e');
           }
@@ -55,7 +57,7 @@ class _SupplyGoAppState extends ConsumerState<SupplyGoApp> {
     }
     return MaterialApp(
       navigatorKey: navigatorKey,
-      title: 'Basood',
+      title: 'Basood Post',
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.system,
