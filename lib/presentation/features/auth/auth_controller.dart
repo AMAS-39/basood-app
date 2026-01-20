@@ -134,9 +134,9 @@ class AuthController extends StateNotifier<AuthState> {
       final refreshToken = await storage.read(key: 'refresh_token');
       final userJson = await storage.read(key: 'user_data');
 
-      // Check if we have a valid access token (most important)
-      if (accessToken != null && !JwtUtils.isTokenExpired(accessToken)) {
-        // Token is valid, restore session
+      // Check if we have an access token (trust backend/frontend for expiration)
+      if (accessToken != null && accessToken.isNotEmpty) {
+        // Token exists, restore session (backend/frontend will handle expiration)
         ref.read(accessTokenProvider.notifier).state = accessToken;
 
         // Restore refresh token if available

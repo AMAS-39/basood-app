@@ -188,10 +188,12 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
         '🔑 Access token from storage: ${accessToken != null ? "exists" : "null"}',
       );
 
-      // Determine URL based on token validity
-      if (accessToken != null && !JwtUtils.isTokenExpired(accessToken)) {
+      // Determine URL based on token existence (trust backend/frontend for expiration)
+      if (accessToken != null && accessToken.isNotEmpty) {
         _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/';
-        debugPrint('✅ Initializing WebView with authenticated URL');
+        debugPrint(
+          '✅ Initializing WebView with authenticated URL (backend will validate)',
+        );
       } else {
         _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
         debugPrint('✅ Initializing WebView with login URL');
@@ -477,12 +479,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
         try {
           debugPrint('🔄 Syncing tokens from WebView login...');
 
-          // Check if token is valid
-          if (JwtUtils.isTokenExpired(accessToken)) {
-            debugPrint('⚠️ Token from WebView is expired, ignoring');
-            return;
-          }
-
+          // Trust backend/frontend - they will handle token expiration
           // Store tokens in secure storage FIRST to ensure persistence
           await _storage.write(key: 'access_token', value: accessToken);
           if (refreshToken != null && refreshToken.isNotEmpty) {
@@ -539,10 +536,9 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
 
       // If we found tokens in cookies, sync them
       if (accessToken != null && accessToken.isNotEmpty) {
-        // Check if we already have this token stored
+        // Check if we already have this token stored (trust backend/frontend for expiration)
         final storedToken = await _storage.read(key: 'access_token');
-        if (storedToken != accessToken &&
-            !JwtUtils.isTokenExpired(accessToken)) {
+        if (storedToken != accessToken) {
           debugPrint('🔄 Found tokens in cookies, syncing...');
           await _storage.write(key: 'access_token', value: accessToken);
           if (refreshToken != null && refreshToken.isNotEmpty) {

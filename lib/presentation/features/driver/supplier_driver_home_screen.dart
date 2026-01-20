@@ -8,6 +8,7 @@ import 'supplier_driver_payments_screen.dart';
 import '../auth/auth_controller.dart';
 import '../notifications/notifications_screen.dart';
 import '../settings/settings_screen.dart';
+import 'qr_scanner_screen.dart';
 
 class SupplierDriverHomeScreen extends ConsumerStatefulWidget {
   const SupplierDriverHomeScreen({super.key});
@@ -62,11 +63,17 @@ class _SupplierDriverHomeScreenState
         },
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          // QR Code scanning functionality
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('QR Scanner coming soon')),
+        onPressed: () async {
+          // Navigate to QR Scanner
+          final result = await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => const QrScannerScreen(),
+            ),
           );
+          if (result != null && mounted) {
+            // QR code was scanned successfully
+            debugPrint('Scanned QR Code: $result');
+          }
         },
         backgroundColor: Colors.teal[800],
         child: const Icon(Icons.qr_code_scanner, color: Colors.white),
@@ -384,10 +391,17 @@ class _SupplierDriverHomeScreenState
             Expanded(
               child: AppButton(
                 text: 'Scan QR Code',
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('QR Scanner coming soon')),
+                onPressed: () async {
+                  // Navigate to QR Scanner
+                  final result = await Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => const QrScannerScreen(),
+                    ),
                   );
+                  if (result != null && mounted) {
+                    // QR code was scanned successfully
+                    debugPrint('Scanned QR Code: $result');
+                  }
                 },
                 isPrimary: false,
               ),

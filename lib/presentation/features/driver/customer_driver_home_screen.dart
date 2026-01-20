@@ -9,6 +9,7 @@ import 'customer_driver_pending_screen.dart';
 import 'customer_driver_current_screen.dart';
 import 'customer_driver_history_screen.dart';
 import '../settings/settings_screen.dart';
+import 'qr_scanner_screen.dart';
 
 class CustomerDriverHomeScreen extends ConsumerStatefulWidget {
   const CustomerDriverHomeScreen({super.key});
@@ -70,11 +71,17 @@ class _CustomerDriverHomeScreenState
         },
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          // QR Code scanning functionality
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('QR Scanner coming soon')),
+        onPressed: () async {
+          // Navigate to QR Scanner
+          final result = await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => const QrScannerScreen(),
+            ),
           );
+          if (result != null && mounted) {
+            // QR code was scanned successfully
+            debugPrint('Scanned QR Code: $result');
+          }
         },
         backgroundColor: Colors.blue[800],
         child: const Icon(Icons.qr_code_scanner, color: Colors.white),

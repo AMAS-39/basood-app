@@ -16,7 +16,7 @@ publish_to: "none" # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.1+5
+version: 1.0.4+4
 
 environment:
   sdk: ^3.9.2
@@ -57,6 +57,9 @@ dependencies:
   path_provider: ^2.1.1
   intl: ^0.19.0
   share_plus: ^7.2.1
+
+  # Barcode/QR Scanner
+  mobile_scanner: ^7.0.0
 
 dev_dependencies:
   flutter_test:
@@ -120,12 +123,20 @@ flutter_launcher_icons:
   android: true
   ios: true
   image_path: "assets/image/logo.png"
+  # Use white background version for iOS (black background replaced with white)
+  image_path_ios: "assets/image/logo_white_bg.png"
   min_sdk_android: 21
-  # Use white background for Android adaptive icons to avoid black background
+  # Use white background for Android adaptive icons
   adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: "assets/image/logo.png"
-  # Remove alpha channel on iOS to prevent black background issues
-  # This will add a white background to transparent areas
+  # iOS: Remove alpha channel and use white background (App Store requirement)
   remove_alpha_ios: true
+  background_color_ios: "#FFFFFF"
+  # iOS 18+ modern features: Support transparent dark mode icon
+  # If you have a transparent version of the logo, uncomment and specify:
+  # image_path_ios_dark_transparent: "assets/image/logo_transparent.png"
+  # For iOS 18+ tinted/grayscale mode (optional):
+  # image_path_ios_tinted_grayscale: "assets/image/logo.png"
+  # desaturate_tinted_to_grayscale_ios: true
   # Ensure proper icon generation
   generate: true
