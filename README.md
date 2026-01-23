@@ -1,6 +1,29 @@
-# basood
+# Basood Post - Flutter Mobile App
 
-A new Flutter project.
+Flutter mobile application for Basood Post delivery management system.
+
+## Web App Integration
+
+**⚠️ IMPORTANT FOR WEB DEVELOPERS:**
+
+The web application must send authentication tokens to the Flutter app for "stay logged in" functionality to work.
+
+**See [WEB_INTEGRATION_GUIDE.md](./WEB_INTEGRATION_GUIDE.md) for complete integration instructions.**
+
+### Quick Start for Web Team
+
+After successful login, the web app MUST call:
+
+```javascript
+NativeAndroidBridge.postMessage(JSON.stringify({
+  command: "saveToken",
+  tokenType: "auth",
+  accessToken: "<JWT_TOKEN>",
+  refreshToken: "<REFRESH_TOKEN>" // Optional
+}));
+```
+
+This is **mandatory** - without it, users will be logged out when they close and reopen the app.
 
 ## Getting Started
 

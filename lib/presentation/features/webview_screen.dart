@@ -5,10 +5,10 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
-import '../../core/utils/jwt_utils.dart';
 import 'auth/auth_controller.dart';
 import '../../services/notification_service.dart';
 import '../../services/firebase_service.dart';
+import '../../core/utils/jwt_utils.dart';
 import '../providers/di_providers.dart';
 
 class WebViewScreen extends ConsumerStatefulWidget {
@@ -18,7 +18,8 @@ class WebViewScreen extends ConsumerStatefulWidget {
   ConsumerState<WebViewScreen> createState() => _WebViewScreenState();
 }
 
-class _WebViewScreenState extends ConsumerState<WebViewScreen> {
+class _WebViewScreenState extends ConsumerState<WebViewScreen>
+    with WidgetsBindingObserver {
   InAppWebViewController? _webViewController;
   bool _isLoading = true;
   bool _hasError = false;
@@ -29,19 +30,17 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
   String? _initialUrl;
   String? _currentUrl;
   bool _isLoggingOut = false; // Flag to prevent logout loops
+  bool _isBootstrapping =
+      true; // Flag to prevent WebView from loading before URL decision
+  bool _hasToken = false; // Track if we have a valid token
 
   @override
   void initState() {
     super.initState();
+    // Register lifecycle observer to handle app resume
+    WidgetsBinding.instance.addObserver(this);
 
-    // ALWAYS set default URL immediately so WebView can start loading
-    // This prevents blank screen - WebView will always have a URL to load
-    _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
-    debugPrint('🚀 WebViewScreen initialized with default URL: $_initialUrl');
-
-    // Ensure URL is never null - critical for preventing blank screens
-    assert(_initialUrl != null, 'Initial URL must not be null');
-
+    // Initialize pull-to-refresh controller
     _pullToRefreshController = PullToRefreshController(
       settings: PullToRefreshSettings(enabled: true),
       onRefresh: () async {
@@ -58,28 +57,116 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
       }
     });
 
-    // Defer provider reads until after build completes to prevent Riverpod errors
-    Future.microtask(() {
-      _requestPermissionsAndInitialize();
-    });
+    // CRITICAL: Determine initial URL BEFORE WebView builds
+    // This prevents the /login flash for authenticated users
+    _bootstrapInitialUrl();
+  }
+
+  /// Bootstrap: Read token and determine initial URL before WebView loads
+  Future<void> _bootstrapInitialUrl() async {
+    try {
+      debugPrint('🔍 Bootstrapping: Checking for stored token...');
+
+      // Read access token from secure storage
+      final accessToken = await _storage
+          .read(key: 'access_token')
+          .timeout(
+            const Duration(seconds: 3),
+            onTimeout: () {
+              debugPrint('⚠️ Token read timed out, using login URL');
+              return null;
+            },
+          );
+
+      if (accessToken != null && accessToken.isNotEmpty) {
+        // Optional: Check if token is expired
+        final isExpired = JwtUtils.isTokenExpired(accessToken);
+
+        if (isExpired) {
+          debugPrint(
+            '⚠️ Stored token is expired, clearing and using login URL',
+          );
+          // Clear expired token
+          await _storage.delete(key: 'access_token');
+          await _storage.delete(key: 'refresh_token');
+          ref.read(accessTokenProvider.notifier).state = null;
+          ref.read(refreshTokenProvider.notifier).state = null;
+
+          _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
+          _hasToken = false;
+        } else {
+          debugPrint(
+            '✅ Valid token found, initializing with authenticated URL',
+          );
+          // Token exists and is valid → go to home, not login
+          _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/';
+          _hasToken = true;
+
+          // Update provider state
+          ref.read(accessTokenProvider.notifier).state = accessToken;
+
+          // Also restore refresh token if available
+          final refreshToken = await _storage.read(key: 'refresh_token');
+          if (refreshToken != null && refreshToken.isNotEmpty) {
+            ref.read(refreshTokenProvider.notifier).state = refreshToken;
+          }
+        }
+      } else {
+        debugPrint('ℹ️ No token found, using login URL');
+        _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
+        _hasToken = false;
+      }
+
+      // Ensure URL is never null
+      _initialUrl ??= 'https://basood-order-test-2025-2026.netlify.app/login';
+      debugPrint('🌐 Bootstrap complete: Initial URL = $_initialUrl');
+
+      // Bootstrap complete - allow WebView to render
+      if (mounted) {
+        setState(() {
+          _isBootstrapping = false;
+        });
+      }
+
+      // Request permissions (non-blocking)
+      _requestPermissions();
+    } catch (e) {
+      debugPrint('❌ Error during bootstrap: $e');
+      // Fallback to login on error
+      _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
+      _hasToken = false;
+
+      if (mounted) {
+        setState(() {
+          _isBootstrapping = false;
+        });
+      }
+    }
   }
 
   @override
   void dispose() {
+    // Unregister lifecycle observer
+    WidgetsBinding.instance.removeObserver(this);
     // Clear notification callback when screen is disposed
     NotificationService.setNotificationTapCallback(null);
     super.dispose();
   }
 
-  Future<void> _requestPermissionsAndInitialize() async {
-    debugPrint('🚀 Starting WebView initialization...');
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
 
-    // Initialize URL first (don't wait for permissions - they're not critical)
-    await _initializeUrl();
-
-    // Request camera and microphone permissions at runtime (non-blocking)
-    _requestPermissions();
+    // When app resumes, re-inject token to restore session (only if token exists)
+    if (state == AppLifecycleState.resumed &&
+        _webViewController != null &&
+        _hasToken) {
+      debugPrint('🔄 App resumed, re-injecting token...');
+      _injectTokenIfAny(_webViewController!);
+    }
   }
+
+  // Removed _requestPermissionsAndInitialize - bootstrap handles URL now
 
   Future<void> _requestPermissions() async {
     if (!mounted) return;
@@ -169,49 +256,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
     );
   }
 
-  Future<void> _initializeUrl() async {
-    if (!mounted) return;
-
-    try {
-      // Check token from storage with timeout to prevent hanging
-      final accessToken = await _storage
-          .read(key: 'access_token')
-          .timeout(
-            const Duration(seconds: 3),
-            onTimeout: () {
-              debugPrint('⚠️ Token read timed out, using login URL');
-              return null;
-            },
-          );
-
-      debugPrint(
-        '🔑 Access token from storage: ${accessToken != null ? "exists" : "null"}',
-      );
-
-      // Determine URL based on token existence (trust backend/frontend for expiration)
-      if (accessToken != null && accessToken.isNotEmpty) {
-        _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/';
-        debugPrint(
-          '✅ Initializing WebView with authenticated URL (backend will validate)',
-        );
-      } else {
-        _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
-        debugPrint('✅ Initializing WebView with login URL');
-      }
-    } catch (e) {
-      debugPrint('⚠️ Error initializing URL, defaulting to login: $e');
-      // ALWAYS set a URL even if there's an error - critical for preventing blank screens
-      _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
-    }
-
-    // Ensure URL is never null
-    _initialUrl ??= 'https://basood-order-test-2025-2026.netlify.app/login';
-    debugPrint('🌐 WebView initial URL set to: $_initialUrl');
-
-    if (mounted) {
-      setState(() {});
-    }
-  }
+  // Removed _initializeUrl - bootstrap handles this now
 
   Future<void> _injectLogoutListener(InAppWebViewController controller) async {
     // Inject JavaScript to listen for logout button clicks ONLY
@@ -432,6 +477,9 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
       final currentUrl = _currentUrl ?? '';
       final isAlreadyOnLogin = currentUrl.contains('/login');
 
+      // Update token flag
+      _hasToken = false;
+
       // Only reload if we're not already on login page
       if (!isAlreadyOnLogin) {
         _isLoggingOut = true;
@@ -561,40 +609,145 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
   }
 
   /// Handle messages from web app via NativeAndroidBridge.postMessage()
+  ///
+  /// MANDATORY FOR WEB TEAM: The web app MUST send auth tokens using this format:
+  ///
+  /// ```javascript
+  /// NativeAndroidBridge.postMessage(JSON.stringify({
+  ///   command: "saveToken",
+  ///   tokenType: "auth",
+  ///   accessToken: "<JWT_TOKEN>",
+  ///   refreshToken: "<REFRESH_TOKEN>" // Optional
+  /// }));
+  /// ```
+  ///
+  /// Expected formats:
+  /// - Auth token (MANDATORY for stay logged in):
+  ///   { "command": "saveToken", "tokenType": "auth", "accessToken": "...", "refreshToken": "..." }
+  /// - FCM token:
+  ///   { "command": "saveToken", "tokenType": "fcm", "token": "..." }
+  /// - Logout:
+  ///   { "command": "clearToken" }
+  ///
+  /// See WEB_INTEGRATION_GUIDE.md for complete integration instructions.
   Future<void> _handleWebMessage(String message) async {
     try {
       final Map<String, dynamic> data = jsonDecode(message);
       final String command = data['command'] as String? ?? '';
 
-      debugPrint('📨 Flutter received web message: command=$command');
+      debugPrint(
+        '📨 Flutter received web message: command=$command, data=${data.keys}',
+      );
 
       if (command == 'saveToken') {
-        final String? token = data['token'] as String?;
-        if (token != null && token.isNotEmpty) {
-          debugPrint('💾 Saving FCM token from web: $token');
+        // Use explicit tokenType field to avoid ambiguity
+        final String? tokenType = data['tokenType'] as String?;
 
-          // Save token to NotificationService
-          await NotificationService.instance.saveFcmToken(token);
+        if (tokenType == 'auth') {
+          // This is an authentication token from web login
+          final String? accessToken =
+              data['accessToken'] as String? ?? data['token'] as String?;
 
-          // Send token to backend
-          try {
-            final dio = ref.read(dioProvider);
-            FirebaseService.initialize(dio: dio);
-            await FirebaseService.sendTokenToBackend(token);
-            debugPrint('✅ FCM token sent to backend successfully');
-          } catch (e) {
-            debugPrint('⚠️ Error sending FCM token to backend: $e');
+          if (accessToken != null && accessToken.isNotEmpty) {
+            debugPrint(
+              '💾 Saving auth token from web: ${accessToken.substring(0, 20)}...',
+            );
+
+            // Save auth token to secure storage
+            await _storage.write(key: 'access_token', value: accessToken);
+
+            // Update provider state
+            ref.read(accessTokenProvider.notifier).state = accessToken;
+
+            // Sync refresh token if provided
+            final String? refreshToken = data['refreshToken'] as String?;
+            if (refreshToken != null && refreshToken.isNotEmpty) {
+              await _storage.write(key: 'refresh_token', value: refreshToken);
+              ref.read(refreshTokenProvider.notifier).state = refreshToken;
+            }
+
+            // Update token flag
+            _hasToken = true;
+
+            debugPrint('✅ Auth token saved successfully');
+          } else {
+            debugPrint(
+              '⚠️ saveToken (auth) received but accessToken is null or empty',
+            );
+          }
+        } else if (tokenType == 'fcm') {
+          // This is an FCM/push notification token
+          final String? token = data['token'] as String?;
+
+          if (token != null && token.isNotEmpty) {
+            debugPrint('💾 Saving FCM token from web: $token');
+
+            // Save token to NotificationService
+            await NotificationService.instance.saveFcmToken(token);
+
+            // Send token to backend
+            try {
+              final dio = ref.read(dioProvider);
+              FirebaseService.initialize(dio: dio);
+              await FirebaseService.sendTokenToBackend(token);
+              debugPrint('✅ FCM token sent to backend successfully');
+            } catch (e) {
+              debugPrint('⚠️ Error sending FCM token to backend: $e');
+            }
+          } else {
+            debugPrint(
+              '⚠️ saveToken (fcm) received but token is null or empty',
+            );
           }
         } else {
-          debugPrint(
-            '⚠️ saveToken command received but token is null or empty',
-          );
+          // Fallback: if no tokenType specified, try to detect
+          // This maintains backward compatibility
+          final String? token = data['token'] as String?;
+          if (token != null && token.isNotEmpty) {
+            // Check if this looks like a JWT (has 3 parts separated by dots)
+            final isAuthToken =
+                token.contains('.') && token.split('.').length == 3;
+
+            if (isAuthToken) {
+              debugPrint(
+                '💾 Saving auth token (auto-detected JWT): ${token.substring(0, 20)}...',
+              );
+              await _storage.write(key: 'access_token', value: token);
+              ref.read(accessTokenProvider.notifier).state = token;
+
+              final String? refreshToken = data['refreshToken'] as String?;
+              if (refreshToken != null && refreshToken.isNotEmpty) {
+                await _storage.write(key: 'refresh_token', value: refreshToken);
+                ref.read(refreshTokenProvider.notifier).state = refreshToken;
+              }
+            } else {
+              debugPrint('💾 Saving FCM token (auto-detected): $token');
+              await NotificationService.instance.saveFcmToken(token);
+              try {
+                final dio = ref.read(dioProvider);
+                FirebaseService.initialize(dio: dio);
+                await FirebaseService.sendTokenToBackend(token);
+              } catch (e) {
+                debugPrint('⚠️ Error sending FCM token: $e');
+              }
+            }
+          }
         }
       } else if (command == 'clearToken') {
-        debugPrint('🗑️ Clearing FCM token and session');
-        // Clear token from NotificationService
+        debugPrint('🗑️ Clearing tokens and session');
+        // Clear auth tokens
+        await _storage.delete(key: 'access_token');
+        await _storage.delete(key: 'refresh_token');
+        ref.read(accessTokenProvider.notifier).state = null;
+        ref.read(refreshTokenProvider.notifier).state = null;
+
+        // Update token flag
+        _hasToken = false;
+
+        // Clear FCM token from NotificationService
         await NotificationService.instance.saveFcmToken('');
-        // Optionally clear auth state
+
+        // Clear auth state
         ref.read(authControllerProvider.notifier).logout();
       } else {
         debugPrint('⚠️ Unknown command received: $command');
@@ -605,6 +758,17 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
   }
 
   /// Inject JavaScript to create NativeAndroidBridge.postMessage API
+  ///
+  /// WEB TEAM: Use this API to send auth tokens after login:
+  ///
+  /// NativeAndroidBridge.postMessage(JSON.stringify({
+  ///   command: "saveToken",
+  ///   tokenType: "auth",
+  ///   accessToken: "<JWT>",
+  ///   refreshToken: "<REFRESH>" // Optional
+  /// }));
+  ///
+  /// See WEB_INTEGRATION_GUIDE.md for complete documentation.
   Future<void> _injectNativeAndroidBridge(
     InAppWebViewController controller,
   ) async {
@@ -626,9 +790,170 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
         };
         
         console.log('NativeAndroidBridge.postMessage API initialized');
+        console.log('WEB TEAM: Send auth tokens after login using:');
+        console.log('NativeAndroidBridge.postMessage(JSON.stringify({command:"saveToken",tokenType:"auth",accessToken:"<JWT>",refreshToken:"<REFRESH>"}));');
       })();
       ''',
     );
+  }
+
+  /// Debug method to check what auth state exists in WebView
+  /// This helps identify what storage mechanism the web app actually uses
+  Future<void> _debugAuthState(InAppWebViewController controller) async {
+    try {
+      final result = await controller.evaluateJavascript(
+        source: '''
+        (function() {
+          const ls = {
+            access_token: localStorage.getItem('access_token'),
+            token: localStorage.getItem('token'),
+            auth_token: localStorage.getItem('auth_token'),
+            accessToken: localStorage.getItem('accessToken'),
+            Authorization: localStorage.getItem('Authorization'),
+          };
+          const ss = {
+            access_token: sessionStorage.getItem('access_token'),
+            token: sessionStorage.getItem('token'),
+            auth_token: sessionStorage.getItem('auth_token'),
+            accessToken: sessionStorage.getItem('accessToken'),
+          };
+          return JSON.stringify({
+            href: location.href,
+            path: location.pathname,
+            hostname: location.hostname,
+            localStorage: ls,
+            sessionStorage: ss,
+            cookies: document.cookie
+          });
+        })();
+        ''',
+      );
+      debugPrint('🔎 Web auth debug: $result');
+    } catch (e) {
+      debugPrint('⚠️ Error debugging auth state: $e');
+    }
+  }
+
+  /// Inject stored authentication token into WebView localStorage/cookies
+  /// This allows the web app to auto-authenticate without requiring login
+  Future<void> _injectTokenIfAny(InAppWebViewController controller) async {
+    try {
+      // Read stored access token
+      final accessToken = await _storage.read(key: 'access_token');
+
+      if (accessToken == null || accessToken.isEmpty) {
+        debugPrint('🔑 No stored token found, skipping injection');
+        // Still debug to see what's in storage
+        await _debugAuthState(controller);
+        return;
+      }
+
+      debugPrint('🔑 Injecting stored token into WebView...');
+
+      // Get current URL to determine correct domain
+      final currentUrl = await controller.getUrl();
+      final domain =
+          currentUrl?.host ?? 'basood-order-test-2025-2026.netlify.app';
+      debugPrint('🌐 Using domain: $domain');
+
+      // Method 1: Set cookies via CookieManager (more reliable for cookie-based auth)
+      try {
+        final cookieManager = CookieManager.instance();
+        final cookieUrl = WebUri('https://$domain');
+
+        // Set cookies with common names - use exact domain from current URL
+        final cookieNames = [
+          'access_token',
+          'accessToken',
+          'token',
+          'auth_token',
+        ];
+        for (final cookieName in cookieNames) {
+          await cookieManager.setCookie(
+            url: cookieUrl,
+            name: cookieName,
+            value: accessToken,
+            domain: domain,
+            path: '/',
+            isSecure: true,
+            isHttpOnly: false,
+            sameSite: HTTPCookieSameSitePolicy.NONE,
+          );
+        }
+        debugPrint('✅ Token set as cookies via CookieManager');
+      } catch (e) {
+        debugPrint('⚠️ Error setting cookies via CookieManager: $e');
+      }
+
+      // Method 2: Inject token into localStorage and sessionStorage via JavaScript
+      // NOTE: We inject into both localStorage AND sessionStorage because many SPAs use sessionStorage
+      await controller.evaluateJavascript(
+        source:
+            '''
+        (function() {
+          try {
+            var token = ${jsonEncode(accessToken)};
+            var domain = window.location.hostname;
+            
+            // Inject into localStorage (try common keys)
+            localStorage.setItem('access_token', token);
+            localStorage.setItem('accessToken', token);
+            localStorage.setItem('token', token);
+            localStorage.setItem('auth_token', token);
+            localStorage.setItem('Authorization', 'Bearer ' + token);
+            
+            // ALSO inject into sessionStorage (many SPAs use this)
+            sessionStorage.setItem('access_token', token);
+            sessionStorage.setItem('accessToken', token);
+            sessionStorage.setItem('token', token);
+            sessionStorage.setItem('auth_token', token);
+            
+            // Set cookie via JavaScript as backup
+            var expires = new Date();
+            expires.setTime(expires.getTime() + (365 * 24 * 60 * 60 * 1000)); // 1 year
+            
+            // Try common cookie names with proper SameSite and Secure flags
+            document.cookie = 'access_token=' + token + '; expires=' + expires.toUTCString() + '; path=/; domain=' + domain + '; SameSite=None; Secure';
+            document.cookie = 'accessToken=' + token + '; expires=' + expires.toUTCString() + '; path=/; domain=' + domain + '; SameSite=None; Secure';
+            document.cookie = 'token=' + token + '; expires=' + expires.toUTCString() + '; path=/; domain=' + domain + '; SameSite=None; Secure';
+            document.cookie = 'auth_token=' + token + '; expires=' + expires.toUTCString() + '; path=/; domain=' + domain + '; SameSite=None; Secure';
+            
+            console.log('✅ Token injected into localStorage, sessionStorage, and cookies');
+            
+            // Trigger auth rehydrate events (many SPAs listen for these)
+            window.dispatchEvent(new Event('storage'));
+            window.dispatchEvent(new Event('auth:updated'));
+            document.dispatchEvent(new Event('auth:updated'));
+            
+            // If web app has known auth restore functions, try calling them
+            if (window.setAuthToken && typeof window.setAuthToken === 'function') {
+              window.setAuthToken(token);
+            }
+            if (window.__APP__ && window.__APP__.auth && typeof window.__APP__.auth.restore === 'function') {
+              window.__APP__.auth.restore(token);
+            }
+            
+            // If we're on login page, redirect to home to trigger auto-auth
+            if (window.location.pathname.includes('/login')) {
+              setTimeout(function() {
+                window.location.href = '/';
+              }, 500);
+            }
+          } catch (e) {
+            console.error('❌ Error injecting token: ' + e);
+          }
+        })();
+        ''',
+      );
+
+      debugPrint('✅ Token injected successfully via JavaScript');
+
+      // Debug after injection to verify it worked
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _debugAuthState(controller);
+    } catch (e) {
+      debugPrint('❌ Error injecting token: $e');
+    }
   }
 
   @override
@@ -659,246 +984,303 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen> {
           bottom: true,
           child: Stack(
             children: [
-              Positioned.fill(
-                child: InAppWebView(
-                  initialUrlRequest: URLRequest(
-                    url: WebUri(
-                      _initialUrl ??
-                          'https://basood-order-test-2025-2026.netlify.app/login',
+              // Show loading screen while bootstrapping (checking token)
+              if (_isBootstrapping)
+                Container(
+                  color: Colors.white,
+                  child: const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text(
+                          'Loading...',
+                          style: TextStyle(fontSize: 16, color: Colors.grey),
+                        ),
+                      ],
                     ),
                   ),
-                  initialSettings: InAppWebViewSettings(
-                    javaScriptEnabled: true,
-                    mediaPlaybackRequiresUserGesture: false,
-                    allowsInlineMediaPlayback: true,
-                    iframeAllow: "camera; microphone",
-                    iframeAllowFullscreen: true,
-                    // useHybridComposition is Android-only, remove for iOS compatibility
-                    // useHybridComposition: true,
-                    safeBrowsingEnabled: true,
-                    domStorageEnabled: true,
-                    // Camera and media access settings
-                    thirdPartyCookiesEnabled: true,
-                    // Respect system UI insets (status bar, navigation bar)
-                    useShouldOverrideUrlLoading: true,
-                    verticalScrollBarEnabled: true,
-                    horizontalScrollBarEnabled: true,
-                    // iOS-specific settings
-                    allowsBackForwardNavigationGestures: true,
-                    allowsLinkPreview: false,
-                    isFraudulentWebsiteWarningEnabled: false,
-                    // Ensure WebView can load content
-                    cacheEnabled: true,
-                    clearCache: false,
-                  ),
-                  shouldOverrideUrlLoading: (controller, navigationAction) async {
-                    // Allow all navigation
-                    debugPrint(
-                      '🔗 Navigation request: ${navigationAction.request.url}',
-                    );
-                    return NavigationActionPolicy.ALLOW;
-                  },
-                  pullToRefreshController: _pullToRefreshController,
-                  onWebViewCreated: (controller) async {
-                    debugPrint('✅ WebView created successfully');
-                    _webViewController = controller;
-
-                    // Add JavaScript handler for logout
-                    controller.addJavaScriptHandler(
-                      handlerName: 'logout',
-                      callback: (args) {
-                        _handleLogout();
-                      },
-                    );
-                    // Add JavaScript handler to sync tokens from WebView login
-                    controller.addJavaScriptHandler(
-                      handlerName: 'syncTokens',
-                      callback: (args) {
-                        _handleTokenSync(args);
-                      },
-                    );
-                    // Add JavaScript handler for NativeAndroidBridge messages
-                    controller.addJavaScriptHandler(
-                      handlerName: 'NativeAndroidBridge',
-                      callback: (args) {
-                        if (args.isNotEmpty && args[0] is String) {
-                          _handleWebMessage(args[0] as String);
-                        }
-                      },
-                    );
-
-                    // Explicitly load the URL if initialUrlRequest didn't work
-                    final urlToLoad =
+                ),
+              // WebView - only render after bootstrap completes
+              if (!_isBootstrapping)
+                Positioned.fill(
+                  child: InAppWebView(
+                    initialUrlRequest: URLRequest(
+                      url: WebUri(
                         _initialUrl ??
-                        'https://basood-order-test-2025-2026.netlify.app/login';
-                    debugPrint('🔄 Explicitly loading URL: $urlToLoad');
-                    try {
-                      await controller.loadUrl(
-                        urlRequest: URLRequest(url: WebUri(urlToLoad)),
+                            'https://basood-order-test-2025-2026.netlify.app/login',
+                      ),
+                    ),
+                    initialSettings: InAppWebViewSettings(
+                      javaScriptEnabled: true,
+                      mediaPlaybackRequiresUserGesture: false,
+                      allowsInlineMediaPlayback: true,
+                      iframeAllow: "camera; microphone",
+                      iframeAllowFullscreen: true,
+                      // useHybridComposition is Android-only, remove for iOS compatibility
+                      // useHybridComposition: true,
+                      safeBrowsingEnabled: true,
+                      domStorageEnabled: true,
+                      // Camera and media access settings
+                      thirdPartyCookiesEnabled: true,
+                      // Respect system UI insets (status bar, navigation bar)
+                      useShouldOverrideUrlLoading: true,
+                      verticalScrollBarEnabled: true,
+                      horizontalScrollBarEnabled: true,
+                      // iOS-specific settings
+                      allowsBackForwardNavigationGestures: true,
+                      allowsLinkPreview: false,
+                      isFraudulentWebsiteWarningEnabled: false,
+                      // Ensure WebView can load content
+                      cacheEnabled: true,
+                      clearCache: false,
+                    ),
+                    shouldOverrideUrlLoading: (controller, navigationAction) async {
+                      final url = navigationAction.request.url.toString();
+                      debugPrint('🔗 Navigation request: $url');
+
+                      // CRITICAL: Prevent navigation to /login if user has a valid token
+                      if (url.contains('/login') && _hasToken) {
+                        debugPrint(
+                          '🚫 Blocked navigation to /login (user has valid token)',
+                        );
+                        // Cancel navigation and redirect to home
+                        Future.microtask(() async {
+                          await controller.loadUrl(
+                            urlRequest: URLRequest(
+                              url: WebUri(
+                                'https://basood-order-test-2025-2026.netlify.app/',
+                              ),
+                            ),
+                          );
+                        });
+                        return NavigationActionPolicy.CANCEL;
+                      }
+
+                      // Allow all other navigation
+                      return NavigationActionPolicy.ALLOW;
+                    },
+                    pullToRefreshController: _pullToRefreshController,
+                    onWebViewCreated: (controller) async {
+                      debugPrint('✅ WebView created successfully');
+                      _webViewController = controller;
+
+                      // Add JavaScript handler for logout
+                      controller.addJavaScriptHandler(
+                        handlerName: 'logout',
+                        callback: (args) {
+                          _handleLogout();
+                        },
                       );
-                    } catch (e) {
-                      debugPrint('❌ Error loading URL: $e');
-                      // Try loading login page as fallback
+                      // Add JavaScript handler to sync tokens from WebView login
+                      controller.addJavaScriptHandler(
+                        handlerName: 'syncTokens',
+                        callback: (args) {
+                          _handleTokenSync(args);
+                        },
+                      );
+                      // Add JavaScript handler for NativeAndroidBridge messages
+                      controller.addJavaScriptHandler(
+                        handlerName: 'NativeAndroidBridge',
+                        callback: (args) {
+                          if (args.isNotEmpty && args[0] is String) {
+                            _handleWebMessage(args[0] as String);
+                          }
+                        },
+                      );
+
+                      // Explicitly load the URL if initialUrlRequest didn't work
+                      final urlToLoad =
+                          _initialUrl ??
+                          'https://basood-order-test-2025-2026.netlify.app/login';
+                      debugPrint('🔄 Explicitly loading URL: $urlToLoad');
                       try {
                         await controller.loadUrl(
-                          urlRequest: URLRequest(
-                            url: WebUri(
-                              'https://basood-order-test-2025-2026.netlify.app/login',
-                            ),
-                          ),
+                          urlRequest: URLRequest(url: WebUri(urlToLoad)),
                         );
-                      } catch (e2) {
-                        debugPrint('❌ Error loading fallback URL: $e2');
+                      } catch (e) {
+                        debugPrint('❌ Error loading URL: $e');
+                        // Try loading login page as fallback
+                        try {
+                          await controller.loadUrl(
+                            urlRequest: URLRequest(
+                              url: WebUri(
+                                'https://basood-order-test-2025-2026.netlify.app/login',
+                              ),
+                            ),
+                          );
+                        } catch (e2) {
+                          debugPrint('❌ Error loading fallback URL: $e2');
+                        }
                       }
-                    }
-                  },
-                  onLoadStart: (controller, url) {
-                    final urlString = url.toString();
-                    final previousUrl = _currentUrl ?? '';
+                    },
+                    onLoadStart: (controller, url) async {
+                      final urlString = url.toString();
+                      final previousUrl = _currentUrl ?? '';
 
-                    debugPrint('🌐 WebView loading: $urlString');
+                      debugPrint('🌐 WebView loading: $urlString');
 
-                    setState(() {
-                      _isLoading = true;
-                      _hasError = false;
-                      _errorMessage = null;
-                      _currentUrl = urlString;
-                    });
-
-                    // Only logout if user navigated FROM authenticated page TO login page
-                    // Don't logout if already on login page or if we're logging out
-                    if (urlString.contains('/login') &&
-                        previousUrl.isNotEmpty &&
-                        !previousUrl.contains('/login') &&
-                        !_isLoggingOut) {
-                      // User navigated to login page from authenticated area, logout
-                      Future.microtask(() {
-                        _handleLogout();
+                      setState(() {
+                        _isLoading = true;
+                        _hasError = false;
+                        _errorMessage = null;
+                        _currentUrl = urlString;
                       });
-                    }
-                  },
-                  onLoadStop: (controller, url) async {
-                    debugPrint('✅ WebView loaded: ${url.toString()}');
 
-                    setState(() {
-                      _isLoading = false;
-                      _currentUrl = url.toString();
-                    });
-                    _pullToRefreshController?.endRefreshing();
+                      // CRITICAL: Inject token early (onLoadStart) before SPA bootstraps
+                      // Only inject if we have a token
+                      if (_hasToken) {
+                        await _injectTokenIfAny(controller);
+                      }
 
-                    // Reset logout flag when page loads successfully
-                    _isLoggingOut = false;
+                      // Only logout if user navigated FROM authenticated page TO login page
+                      // Don't logout if already on login page or if we're logging out
+                      if (urlString.contains('/login') &&
+                          previousUrl.isNotEmpty &&
+                          !previousUrl.contains('/login') &&
+                          !_isLoggingOut) {
+                        // User navigated to login page from authenticated area, logout
+                        Future.microtask(() {
+                          _handleLogout();
+                        });
+                      }
+                    },
+                    onLoadStop: (controller, url) async {
+                      debugPrint('✅ WebView loaded: ${url.toString()}');
 
-                    // Inject JavaScript to listen for logout
-                    await _injectLogoutListener(controller);
+                      setState(() {
+                        _isLoading = false;
+                        _currentUrl = url.toString();
+                      });
+                      _pullToRefreshController?.endRefreshing();
 
-                    // Inject JavaScript to sync tokens from WebView login
-                    await _injectLoginSyncListener(controller);
+                      // Reset logout flag when page loads successfully
+                      _isLoggingOut = false;
 
-                    // Inject NativeAndroidBridge.postMessage API
-                    await _injectNativeAndroidBridge(controller);
+                      // Debug auth state BEFORE injection (baseline)
+                      debugPrint('🔎 Debugging auth state BEFORE injection:');
+                      await _debugAuthState(controller);
 
-                    // Hide bug/feedback button
-                    await _hideBugButton(controller);
+                      // CRITICAL: Inject stored token into WebView BEFORE other scripts
+                      // Only inject if we have a token
+                      if (_hasToken) {
+                        await _injectTokenIfAny(controller);
+                      }
 
-                    // Also check cookies directly as backup (if not on login page)
-                    if (!url.toString().contains('/login')) {
-                      _checkCookiesForTokens(controller);
-                    }
-                  },
-                  onReceivedError: (controller, request, error) {
-                    debugPrint('❌ WebView error: ${error.description}');
-                    debugPrint('❌ Failed URL: ${request.url}');
-                    setState(() {
-                      _isLoading = false;
-                      _hasError = true;
-                      _errorMessage = error.description;
-                    });
-                  },
-                  onReceivedHttpError: (controller, request, response) {
-                    debugPrint('❌ WebView HTTP error: ${response.statusCode}');
-                    debugPrint('❌ Failed URL: ${request.url}');
-                    final statusCode = response.statusCode;
-                    if (statusCode != null && statusCode >= 400) {
+                      // Inject JavaScript to listen for logout
+                      await _injectLogoutListener(controller);
+
+                      // Inject JavaScript to sync tokens from WebView login
+                      await _injectLoginSyncListener(controller);
+
+                      // Inject NativeAndroidBridge.postMessage API
+                      await _injectNativeAndroidBridge(controller);
+
+                      // Hide bug/feedback button
+                      await _hideBugButton(controller);
+
+                      // Also check cookies directly as backup (if not on login page)
+                      if (!url.toString().contains('/login')) {
+                        _checkCookiesForTokens(controller);
+                      }
+                    },
+                    onReceivedError: (controller, request, error) {
+                      debugPrint('❌ WebView error: ${error.description}');
+                      debugPrint('❌ Failed URL: ${request.url}');
                       setState(() {
                         _isLoading = false;
                         _hasError = true;
-                        _errorMessage = 'HTTP Error $statusCode';
+                        _errorMessage = error.description;
                       });
-                    }
-                  },
-                  androidOnPermissionRequest: (controller, origin, resources) async {
-                    // Grant camera and microphone permissions automatically on Android
-                    final resourceStrings = resources
-                        .map((r) => r.toString())
-                        .join(", ");
-                    debugPrint(
-                      'Android Permission request from $origin: $resourceStrings',
-                    );
+                    },
+                    onReceivedHttpError: (controller, request, response) {
+                      debugPrint(
+                        '❌ WebView HTTP error: ${response.statusCode}',
+                      );
+                      debugPrint('❌ Failed URL: ${request.url}');
+                      final statusCode = response.statusCode;
+                      if (statusCode != null && statusCode >= 400) {
+                        setState(() {
+                          _isLoading = false;
+                          _hasError = true;
+                          _errorMessage = 'HTTP Error $statusCode';
+                        });
+                      }
+                    },
+                    androidOnPermissionRequest: (controller, origin, resources) async {
+                      // Grant camera and microphone permissions automatically on Android
+                      final resourceStrings = resources
+                          .map((r) => r.toString())
+                          .join(", ");
+                      debugPrint(
+                        'Android Permission request from $origin: $resourceStrings',
+                      );
 
-                    // Check if camera permission is already granted
-                    final cameraStatus = await Permission.camera.status;
-                    if (!cameraStatus.isGranted) {
-                      final result = await Permission.camera.request();
-                      debugPrint('Camera permission requested: $result');
-                    }
+                      // Check if camera permission is already granted
+                      final cameraStatus = await Permission.camera.status;
+                      if (!cameraStatus.isGranted) {
+                        final result = await Permission.camera.request();
+                        debugPrint('Camera permission requested: $result');
+                      }
 
-                    // Check if microphone permission is already granted
-                    final micStatus = await Permission.microphone.status;
-                    if (!micStatus.isGranted) {
-                      final result = await Permission.microphone.request();
-                      debugPrint('Microphone permission requested: $result');
-                    }
+                      // Check if microphone permission is already granted
+                      final micStatus = await Permission.microphone.status;
+                      if (!micStatus.isGranted) {
+                        final result = await Permission.microphone.request();
+                        debugPrint('Microphone permission requested: $result');
+                      }
 
-                    return PermissionRequestResponse(
-                      resources: resources,
-                      action: PermissionRequestResponseAction.GRANT,
-                    );
-                  },
-                  // CRITICAL: iOS WebView permission handler - grants camera/mic to WebView
-                  // This is required even if app-level permissions are granted
-                  // Without this, WebRTC will fail with NotAllowedError
-                  onPermissionRequest: (controller, request) async {
-                    final resourceStrings = request.resources
-                        .map((r) => r.toString())
-                        .join(", ");
-                    debugPrint(
-                      '📹 WebView permission request: $resourceStrings',
-                    );
-                    // Grant all permission requests (camera, microphone)
-                    // App-level permissions are already checked in _requestPermissions()
-                    return PermissionResponse(
-                      resources: request.resources,
-                      action: PermissionResponseAction.GRANT,
-                    );
-                  },
-                  onConsoleMessage: (controller, consoleMessage) {
-                    debugPrint('WebView Console: ${consoleMessage.message}');
-                  },
-                  onReceivedServerTrustAuthRequest:
-                      (controller, challenge) async {
-                        return ServerTrustAuthResponse(
-                          action: ServerTrustAuthResponseAction.PROCEED,
-                        );
-                      },
-                  // JavaScript handler for logout from webview
-                  onJsAlert: (controller, jsAlertRequest) async {
-                    // Check if it's a logout message
-                    final message = jsAlertRequest.message?.toLowerCase() ?? '';
-                    if (message.contains('logout')) {
-                      _handleLogout();
-                      return JsAlertResponse(handledByClient: true);
-                    }
-                    return JsAlertResponse(handledByClient: false);
-                  },
+                      return PermissionRequestResponse(
+                        resources: resources,
+                        action: PermissionRequestResponseAction.GRANT,
+                      );
+                    },
+                    // CRITICAL: iOS WebView permission handler - grants camera/mic to WebView
+                    // This is required even if app-level permissions are granted
+                    // Without this, WebRTC will fail with NotAllowedError
+                    onPermissionRequest: (controller, request) async {
+                      final resourceStrings = request.resources
+                          .map((r) => r.toString())
+                          .join(", ");
+                      debugPrint(
+                        '📹 WebView permission request: $resourceStrings',
+                      );
+                      // Grant all permission requests (camera, microphone)
+                      // App-level permissions are already checked in _requestPermissions()
+                      return PermissionResponse(
+                        resources: request.resources,
+                        action: PermissionResponseAction.GRANT,
+                      );
+                    },
+                    onConsoleMessage: (controller, consoleMessage) {
+                      debugPrint('WebView Console: ${consoleMessage.message}');
+                    },
+                    onReceivedServerTrustAuthRequest:
+                        (controller, challenge) async {
+                          return ServerTrustAuthResponse(
+                            action: ServerTrustAuthResponseAction.PROCEED,
+                          );
+                        },
+                    // JavaScript handler for logout from webview
+                    onJsAlert: (controller, jsAlertRequest) async {
+                      // Check if it's a logout message
+                      final message =
+                          jsAlertRequest.message?.toLowerCase() ?? '';
+                      if (message.contains('logout')) {
+                        _handleLogout();
+                        return JsAlertResponse(handledByClient: true);
+                      }
+                      return JsAlertResponse(handledByClient: false);
+                    },
+                  ),
                 ),
-              ),
-              if (_isLoading)
+              if (!_isBootstrapping && _isLoading)
                 Container(
                   color: Colors.white,
                   child: const Center(child: CircularProgressIndicator()),
                 ),
-              if (_hasError && !_isLoading)
+              if (!_isBootstrapping && _hasError && !_isLoading)
                 Container(
                   color: Colors.white,
                   child: Center(
