@@ -5,6 +5,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import '../../core/config/env.dart';
 import 'auth/auth_controller.dart';
 import '../../services/notification_service.dart';
 import '../../services/firebase_service.dart';
@@ -92,14 +93,14 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
           ref.read(accessTokenProvider.notifier).state = null;
           ref.read(refreshTokenProvider.notifier).state = null;
 
-          _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
+          _initialUrl = '${Env.webBaseUrl}/login';
           _hasToken = false;
         } else {
           debugPrint(
             '✅ Valid token found, initializing with authenticated URL',
           );
           // Token exists and is valid → go to home, not login
-          _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/';
+          _initialUrl = '${Env.webBaseUrl}/';
           _hasToken = true;
 
           // Update provider state
@@ -113,12 +114,12 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
         }
       } else {
         debugPrint('ℹ️ No token found, using login URL');
-        _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
+        _initialUrl = '${Env.webBaseUrl}/login';
         _hasToken = false;
       }
 
       // Ensure URL is never null
-      _initialUrl ??= 'https://basood-order-test-2025-2026.netlify.app/login';
+      _initialUrl ??= '${Env.webBaseUrl}/login';
       debugPrint('🌐 Bootstrap complete: Initial URL = $_initialUrl');
 
       // Bootstrap complete - allow WebView to render
@@ -133,7 +134,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
     } catch (e) {
       debugPrint('❌ Error during bootstrap: $e');
       // Fallback to login on error
-      _initialUrl = 'https://basood-order-test-2025-2026.netlify.app/login';
+      _initialUrl = '${Env.webBaseUrl}/login';
       _hasToken = false;
 
       if (mounted) {
@@ -383,19 +384,20 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
   Future<void> _injectLoginSyncListener(
     InAppWebViewController controller,
   ) async {
-    // Inject JavaScript to detect login and sync tokens
+    // Inject JavaScript to detect login and sync tokens (iOS + Android)
+    // Syncs only when token changes - avoids excessive polling that breaks iOS
     await controller.evaluateJavascript(
       source: '''
       (function() {
-        // Function to extract token from cookies
+        var lastSyncedToken = null;
+
         function getCookie(name) {
           var value = "; " + document.cookie;
           var parts = value.split("; " + name + "=");
           if (parts.length == 2) return parts.pop().split(";").shift();
           return null;
         }
-        
-        // Function to extract token from localStorage
+
         function getFromLocalStorage(key) {
           try {
             return localStorage.getItem(key);
@@ -403,23 +405,17 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
             return null;
           }
         }
-        
-        // Function to sync tokens to Flutter
+
         function syncTokensToFlutter() {
-          // Try to get access token from various possible locations
-          var accessToken = getCookie('access_token') || 
-                          getCookie('accessToken') || 
-                          getCookie('token') ||
-                          getFromLocalStorage('access_token') ||
-                          getFromLocalStorage('accessToken') ||
-                          getFromLocalStorage('token');
-          
-          var refreshToken = getCookie('refresh_token') || 
-                            getCookie('refreshToken') ||
-                            getFromLocalStorage('refresh_token') ||
-                            getFromLocalStorage('refreshToken');
-          
-          // Also check Authorization header if stored
+          if (!window.flutter_inappwebview || !window.flutter_inappwebview.callHandler) return;
+
+          var accessToken = getCookie('access_token') ||
+            getCookie('accessToken') ||
+            getCookie('token') ||
+            getFromLocalStorage('access_token') ||
+            getFromLocalStorage('accessToken') ||
+            getFromLocalStorage('token');
+
           if (!accessToken) {
             try {
               var authHeader = getFromLocalStorage('Authorization');
@@ -428,36 +424,33 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
               }
             } catch (e) {}
           }
-          
-          // If we found tokens, send them to Flutter
-          if (accessToken && window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
-            window.flutter_inappwebview.callHandler('syncTokens', {
-              accessToken: accessToken,
-              refreshToken: refreshToken || ''
-            });
-          }
+
+          if (!accessToken || accessToken === lastSyncedToken) return;
+
+          var refreshToken = getCookie('refresh_token') ||
+            getCookie('refreshToken') ||
+            getFromLocalStorage('refresh_token') ||
+            getFromLocalStorage('refreshToken');
+
+          lastSyncedToken = accessToken;
+          window.flutter_inappwebview.callHandler('syncTokens', {
+            accessToken: accessToken,
+            refreshToken: refreshToken || ''
+          });
         }
-        
-        // Monitor URL changes to detect successful login
+
         var lastUrl = window.location.href;
-        var checkInterval = setInterval(function() {
+        setInterval(function() {
           var currentUrl = window.location.href;
-          
-          // If URL changed from /login to something else, user likely logged in
           if (lastUrl.includes('/login') && !currentUrl.includes('/login')) {
-            // Wait a bit for tokens to be set, then sync
+            lastSyncedToken = null;
             setTimeout(syncTokensToFlutter, 1000);
-          }
-          
-          // Also periodically check for tokens (every 5 seconds)
-          if (currentUrl && !currentUrl.includes('/login')) {
+          } else if (!currentUrl.includes('/login')) {
             syncTokensToFlutter();
           }
-          
           lastUrl = currentUrl;
-        }, 2000);
-        
-        // Also sync immediately on page load if not on login page
+        }, 10000);
+
         if (!window.location.href.includes('/login')) {
           setTimeout(syncTokensToFlutter, 2000);
         }
@@ -491,7 +484,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
         _webViewController?.loadUrl(
           urlRequest: URLRequest(
             url: WebUri(
-              'https://basood-order-test-2025-2026.netlify.app/login',
+              '${Env.webBaseUrl}/login',
             ),
           ),
         );
@@ -560,7 +553,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
     // Backup method: Check cookies directly from Flutter side
     try {
       final cookieManager = CookieManager.instance();
-      final url = WebUri('https://basood-order-test-2025-2026.netlify.app');
+      final url = WebUri(Env.webBaseUrl);
 
       // Get all cookies for the domain
       final cookies = await cookieManager.getCookies(url: url);
@@ -853,7 +846,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
       // Get current URL to determine correct domain
       final currentUrl = await controller.getUrl();
       final domain =
-          currentUrl?.host ?? 'basood-order-test-2025-2026.netlify.app';
+          currentUrl?.host ?? Uri.parse(Env.webBaseUrl).host;
       debugPrint('🌐 Using domain: $domain');
 
       // Method 1: Set cookies via CookieManager (more reliable for cookie-based auth)
@@ -1009,7 +1002,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
                     initialUrlRequest: URLRequest(
                       url: WebUri(
                         _initialUrl ??
-                            'https://basood-order-test-2025-2026.netlify.app/login',
+                            '${Env.webBaseUrl}/login',
                       ),
                     ),
                     initialSettings: InAppWebViewSettings(
@@ -1050,7 +1043,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
                           await controller.loadUrl(
                             urlRequest: URLRequest(
                               url: WebUri(
-                                'https://basood-order-test-2025-2026.netlify.app/',
+                                '${Env.webBaseUrl}/',
                               ),
                             ),
                           );
@@ -1093,7 +1086,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
                       // Explicitly load the URL if initialUrlRequest didn't work
                       final urlToLoad =
                           _initialUrl ??
-                          'https://basood-order-test-2025-2026.netlify.app/login';
+                          '${Env.webBaseUrl}/login';
                       debugPrint('🔄 Explicitly loading URL: $urlToLoad');
                       try {
                         await controller.loadUrl(
@@ -1106,7 +1099,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
                           await controller.loadUrl(
                             urlRequest: URLRequest(
                               url: WebUri(
-                                'https://basood-order-test-2025-2026.netlify.app/login',
+                                '${Env.webBaseUrl}/login',
                               ),
                             ),
                           );

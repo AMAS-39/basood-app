@@ -7,9 +7,9 @@ class Env {
   // Frontend Web URL (port 5173) - for WebView screens
   static const webBaseUrl = String.fromEnvironment(
     'WEB_BASE_URL',
-    defaultValue: 'https://basood-order-test-2025-2026.netlify.app',
+    defaultValue: 'https://basood-post.vercel.app',
   );
 }
 
 //https://hana-basod-ordering.azurewebsites.net
-//https://basood-order-test-2025-2026.netlify.app
+//https://basood-post.vercel.app
