@@ -16,6 +16,13 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await FileLogger.init();
 
+  // Capture all debugPrint output so FAB can show full logs
+  debugPrint = (String? message, {int? wrapWidth}) {
+    if (message != null && message.isNotEmpty) {
+      FileLogger.log(message); // Logs to file + prints to console
+    }
+  };
+
   await Firebase.initializeApp();
 
   // REQUIRED for Android + iOS background notifications
