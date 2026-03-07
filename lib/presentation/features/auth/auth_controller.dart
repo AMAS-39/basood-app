@@ -1,12 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:hooks_riverpod/legacy.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'dart:convert';
 import '../../../domain/entities/user_entity.dart';
-import '../../providers/use_case_providers.dart';
 import '../../providers/di_providers.dart';
-import '../../../services/firebase_service.dart';
 import '../../../core/utils/jwt_utils.dart';
 
 final authControllerProvider = StateNotifierProvider<AuthController, AuthState>(
@@ -47,58 +44,6 @@ class AuthController extends StateNotifier<AuthState> {
   final Ref ref;
 
   AuthController(this.ref) : super(const AuthState());
-
-  Future<void> login({
-    required String username,
-    required String password,
-  }) async {
-    state = state.copyWith(isLoading: true, error: null);
-
-    try {
-      final loginUC = ref.read(loginMobileUCProvider);
-      final (user, tokens) = await loginUC.call(
-        username: username,
-        password: password,
-      );
-
-      // Store tokens
-      ref.read(accessTokenProvider.notifier).state = tokens.accessToken;
-      ref.read(refreshTokenProvider.notifier).state = tokens.refreshToken;
-
-      // Store in secure storage
-      final storage = ref.read(secureStorageProvider);
-      await storage.write(key: 'access_token', value: tokens.accessToken);
-      await storage.write(key: 'refresh_token', value: tokens.refreshToken);
-      await storage.write(
-        key: 'user_data',
-        value: jsonEncode({
-          'id': user.id,
-          'name': user.name,
-          'role': user.role,
-          'isToCustomer': user.isToCustomer,
-          'email': user.email,
-          'phone': user.phone,
-          'address': user.address,
-          'supplierId': user.supplierId,
-        }),
-      );
-
-      // Send FCM token to backend after successful login
-      try {
-        final fcmToken = await FirebaseMessaging.instance.getToken();
-        if (fcmToken != null) {
-          await FirebaseService.sendTokenToBackend(fcmToken);
-        }
-      } catch (e) {
-        print('⚠️ Failed to send FCM token after login: $e');
-        // Don't fail login if FCM token send fails
-      }
-
-      state = state.copyWith(isLoading: false, user: user);
-    } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
-    }
-  }
 
   Future<void> logout() async {
     // Try to revoke token on server, but don't fail if it doesn't work

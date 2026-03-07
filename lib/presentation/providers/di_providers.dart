@@ -8,24 +8,16 @@ import '../../core/network/auth_interceptor.dart';
 import '../../core/network/dio_client.dart';
 import '../../core/network/refresh_interceptor.dart';
 import '../../infrastructure/datasources/auth_remote_ds.dart';
-import '../../infrastructure/datasources/driver_remote_ds.dart';
-import '../../infrastructure/datasources/supplier_remote_ds.dart';
-import '../../infrastructure/datasources/dashboard_remote_ds.dart';
-import '../../infrastructure/datasources/notification_remote_ds.dart';
 import '../../infrastructure/repositories_impl/auth_repository_impl.dart';
-import '../../infrastructure/repositories_impl/driver_repository_impl.dart';
-import '../../infrastructure/repositories_impl/supplier_repository_impl.dart';
-import '../../infrastructure/repositories_impl/dashboard_repository_impl.dart';
-import '../../infrastructure/repositories_impl/notification_repository_impl.dart';
 import '../../domain/repositories/auth_repository.dart';
-import '../../domain/repositories/driver_repository.dart';
-import '../../domain/repositories/supplier_repository.dart';
-import '../../domain/repositories/dashboard_repository.dart';
-import '../../domain/repositories/notification_repository.dart';
 
-// Storage
+// Storage - unified iOS options for token persistence (KeychainAccessibility.first_unlock)
 final secureStorageProvider = Provider<FlutterSecureStorage>((ref) {
-  return const FlutterSecureStorage();
+  return const FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock,
+    ),
+  );
 });
 
 // Token providers
@@ -99,39 +91,7 @@ final authRemoteDSProvider = Provider<AuthRemoteDS>((ref) {
   return AuthRemoteDS(ref.read(dioProvider));
 });
 
-final driverRemoteDSProvider = Provider<DriverRemoteDS>((ref) {
-  return DriverRemoteDS(ref.read(dioProvider));
-});
-
-final supplierRemoteDSProvider = Provider<SupplierRemoteDS>((ref) {
-  return SupplierRemoteDS(ref.read(dioProvider));
-});
-
-final dashboardRemoteDSProvider = Provider<DashboardRemoteDS>((ref) {
-  return DashboardRemoteDS(ref.read(dioProvider));
-});
-
-final notificationRemoteDSProvider = Provider<NotificationRemoteDS>((ref) {
-  return NotificationRemoteDS(ref.read(dioProvider));
-});
-
 // Repositories
 final authRepositoryProvider = Provider<AuthRepository>((ref) {
   return AuthRepositoryImpl(ref.read(authRemoteDSProvider));
-});
-
-final driverRepositoryProvider = Provider<DriverRepository>((ref) {
-  return DriverRepositoryImpl(ref.read(driverRemoteDSProvider));
-});
-
-final supplierRepositoryProvider = Provider<SupplierRepository>((ref) {
-  return SupplierRepositoryImpl(ref.read(supplierRemoteDSProvider));
-});
-
-final dashboardRepositoryProvider = Provider<DashboardRepository>((ref) {
-  return DashboardRepositoryImpl(ref.read(dashboardRemoteDSProvider));
-});
-
-final notificationRepositoryProvider = Provider<NotificationRepository>((ref) {
-  return NotificationRepositoryImpl(ref.read(notificationRemoteDSProvider));
 });
