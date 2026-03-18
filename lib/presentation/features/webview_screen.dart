@@ -36,11 +36,29 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
       true; // Flag to prevent WebView from loading before URL decision
   bool _hasToken =
       false; // Track if we have a token (existence only, not validity)
-  String?
-  _tokenForUserScript; // Token to inject at document start (set during bootstrap)
-  String?
-  _refreshTokenForUserScript; // Refresh token to inject (set during bootstrap)
   static const _cookieSnapshotKey = 'web_cookie_snapshot_json';
+  static const _userTypeKey = 'user_type';
+
+  int _loginRescueAttempts = 0;
+  static const int _maxLoginRescueAttempts = 1;
+
+  String _resolveHomePathForUserType(String? userType) {
+    switch ((userType ?? '').toLowerCase()) {
+      case 'supplier':
+        return '/supplier-side/main-screen';
+      case 'driver':
+        return '/driver-side';
+      case 'admin':
+      default:
+        return '/';
+    }
+  }
+
+  Future<String> _resolveHomeUrl() async {
+    final storedUserType = await _storage.read(key: _userTypeKey);
+    final homePath = _resolveHomePathForUserType(storedUserType);
+    return '${Env.webBaseUrl}$homePath';
+  }
 
   @override
   void initState() {
@@ -71,7 +89,8 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
     _bootstrapInitialUrl();
   }
 
-  /// Bootstrap: Read token and determine initial URL before WebView loads
+  /// Bootstrap: Read token and determine initial URL before WebView loads.
+  /// Order: 1) Restore cookies (snapshot + token/refreshtoken), 2) Set route, 3) Allow load.
   Future<void> _bootstrapInitialUrl() async {
     try {
       debugPrint('🔍 Bootstrapping: Checking for stored token...');
@@ -94,62 +113,33 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
       );
 
       if (accessToken != null && accessToken.isNotEmpty) {
-        // Use token if it exists - rely on backend/web to validate expiration
-        _initialUrl = '${Env.webBaseUrl}/';
         _hasToken = true;
-        _tokenForUserScript = accessToken;
         final refreshToken = await _storage.read(key: 'refresh_token');
-        _refreshTokenForUserScript =
-            (refreshToken != null && refreshToken.isNotEmpty)
-            ? refreshToken
-            : null;
+
+        // 1) COOKIES FIRST: Restore full cookie snapshot before any page load
+        final snapshotRaw = await _storage.read(key: _cookieSnapshotKey);
+        final snapshotExists = snapshotRaw != null && snapshotRaw.isNotEmpty;
         debugPrint(
-          '✅ Token found (len=${accessToken.length}), initializing with home URL',
+          '🔍 Bootstrap: cookie snapshot exists=$snapshotExists',
         );
 
-        // Restore full cookie snapshot before load (token, refreshtoken, id, etc.)
-        await _restoreCookieSnapshotBeforeLoad();
-
-        // Set token cookies with dual attributes (LAX + NONE+Secure) - web uses token
-        try {
-          final cookieManager = CookieManager.instance();
-          final cookieUrl = WebUri(Env.webBaseUrl);
-          final domain = Uri.parse(Env.webBaseUrl).host;
-          const tokenNames = [
-            'token',
-            'access_token',
-            'accessToken',
-            'auth_token',
-          ];
-
-          for (final name in tokenNames) {
-            await cookieManager.setCookie(
-              url: cookieUrl,
-              name: name,
-              value: accessToken,
-              domain: domain,
-              path: '/',
-              isSecure: false,
-              isHttpOnly: false,
-              sameSite: HTTPCookieSameSitePolicy.LAX,
-            );
-            await cookieManager.setCookie(
-              url: cookieUrl,
-              name: name,
-              value: accessToken,
-              domain: domain,
-              path: '/',
-              isSecure: true,
-              isHttpOnly: false,
-              sameSite: HTTPCookieSameSitePolicy.NONE,
-            );
-          }
-          if (refreshToken != null && refreshToken.isNotEmpty) {
-            for (final name in ['refreshtoken', 'refresh_token']) {
+        if (snapshotExists) {
+          final restoredCount = await _restoreCookieSnapshotBeforeLoad();
+          debugPrint(
+            '🔍 Bootstrap: restored $restoredCount cookies from full snapshot',
+          );
+        } else {
+          // No snapshot: minimal fallback - set token/refreshtoken cookies only
+          try {
+            final cookieManager = CookieManager.instance();
+            final cookieUrl = WebUri(Env.webBaseUrl);
+            final domain = Uri.parse(Env.webBaseUrl).host;
+            const tokenNames = ['token', 'access_token', 'accessToken', 'auth_token'];
+            for (final name in tokenNames) {
               await cookieManager.setCookie(
                 url: cookieUrl,
                 name: name,
-                value: refreshToken,
+                value: accessToken,
                 domain: domain,
                 path: '/',
                 isSecure: false,
@@ -159,7 +149,7 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
               await cookieManager.setCookie(
                 url: cookieUrl,
                 name: name,
-                value: refreshToken,
+                value: accessToken,
                 domain: domain,
                 path: '/',
                 isSecure: true,
@@ -167,16 +157,50 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
                 sameSite: HTTPCookieSameSitePolicy.NONE,
               );
             }
+            if (refreshToken != null && refreshToken.isNotEmpty) {
+              for (final name in ['refreshtoken', 'refresh_token']) {
+                await cookieManager.setCookie(
+                  url: cookieUrl,
+                  name: name,
+                  value: refreshToken,
+                  domain: domain,
+                  path: '/',
+                  isSecure: false,
+                  isHttpOnly: false,
+                  sameSite: HTTPCookieSameSitePolicy.LAX,
+                );
+                await cookieManager.setCookie(
+                  url: cookieUrl,
+                  name: name,
+                  value: refreshToken,
+                  domain: domain,
+                  path: '/',
+                  isSecure: true,
+                  isHttpOnly: false,
+                  sameSite: HTTPCookieSameSitePolicy.NONE,
+                );
+              }
+            }
+            debugPrint('🔑 Bootstrap: no snapshot, set token/refreshtoken cookies only');
+          } catch (e) {
+            debugPrint('⚠️ Bootstrap cookie fallback failed: $e');
           }
-          debugPrint('🔑 Bootstrap: cookies set via CookieManager before load');
-        } catch (e) {
-          debugPrint('⚠️ Bootstrap cookie pre-set failed: $e');
         }
+
+        // 2) ROUTE: Resolve home path by role
+        final storedUserType = await _storage.read(key: _userTypeKey);
+        final homePath = _resolveHomePathForUserType(storedUserType);
+        _initialUrl = '${Env.webBaseUrl}$homePath';
+        debugPrint(
+          '🔍 Bootstrap: stored user_type=$storedUserType, resolved home path=$homePath',
+        );
+        debugPrint(
+          '✅ Token found (len=${accessToken.length}), initializing with home URL=$_initialUrl',
+        );
 
         // Update provider state
         ref.read(accessTokenProvider.notifier).state = accessToken;
 
-        // Also restore refresh token if available
         final refreshExists = refreshToken != null && refreshToken.isNotEmpty;
         debugPrint(
           '🔍 Cold start: refresh_token exists=$refreshExists, length=${refreshToken?.length ?? 0}',
@@ -188,8 +212,6 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
         debugPrint('ℹ️ No token found, using login URL');
         _initialUrl = '${Env.webBaseUrl}/login';
         _hasToken = false;
-        _tokenForUserScript = null;
-        _refreshTokenForUserScript = null;
       }
 
       // Ensure URL is never null
@@ -210,7 +232,6 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
       // Fallback to login on error
       _initialUrl = '${Env.webBaseUrl}/login';
       _hasToken = false;
-      _tokenForUserScript = null;
 
       if (mounted) {
         setState(() {
@@ -243,12 +264,11 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
           (u?.path.contains('/login') ?? false) ||
           (u?.fragment.contains('login') ?? false);
       if (isLogin && !_isLoggingOut) {
-        debugPrint(
-          '🔄 App resumed on /login with token -> inject and go /',
-        );
-        _injectTokenIfAny(_webViewController!).then((_) {
+        debugPrint('🔄 App resumed on /login with token -> restore full cookies and go home');
+        _restoreAllCookiesNow().then((_) async {
+          final homeUrl = await _resolveHomeUrl();
           _webViewController?.loadUrl(
-            urlRequest: URLRequest(url: WebUri('${Env.webBaseUrl}/')),
+            urlRequest: URLRequest(url: WebUri(homeUrl)),
           );
         });
       }
@@ -577,13 +597,12 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
       await _storage.delete(key: 'access_token');
       await _storage.delete(key: 'refresh_token');
       await _storage.delete(key: _cookieSnapshotKey);
+      await _storage.delete(key: _userTypeKey);
       ref.read(accessTokenProvider.notifier).state = null;
       ref.read(refreshTokenProvider.notifier).state = null;
 
       // Update token flags
       _hasToken = false;
-      _tokenForUserScript = null;
-      _refreshTokenForUserScript = null;
 
       // Only reload if we're not already on login page
       if (!isAlreadyOnLogin) {
@@ -652,17 +671,16 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
 
           debugPrint('✅ Tokens synced to provider state');
 
-          // Update token flags so document-start injection uses new token on next load
+          // Update token flags
           _hasToken = true;
-          _tokenForUserScript = accessToken;
-          _refreshTokenForUserScript =
-              (refreshToken != null && refreshToken.isNotEmpty)
-              ? refreshToken
-              : null;
           if (mounted) setState(() {});
 
           if (_webViewController != null) {
             await Future.delayed(const Duration(milliseconds: 500));
+            await _snapshotWebCookies(_webViewController!);
+            await Future.delayed(const Duration(seconds: 1));
+            await _snapshotWebCookies(_webViewController!);
+            await Future.delayed(const Duration(seconds: 2));
             await _snapshotWebCookies(_webViewController!);
           }
 
@@ -727,11 +745,6 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
 
           // Update token flags
           _hasToken = true;
-          _tokenForUserScript = accessToken;
-          _refreshTokenForUserScript =
-              (refreshToken != null && refreshToken.isNotEmpty)
-              ? refreshToken
-              : null;
           if (mounted) setState(() {});
         }
       }
@@ -741,143 +754,175 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
     }
   }
 
+  /// Serialize HTTPCookieSameSitePolicy to string for JSON storage.
+  /// Returns null when policy is null (preserve exact SameSite, no default).
+  String? _sameSiteToString(HTTPCookieSameSitePolicy? policy) {
+    if (policy == null) return null;
+    return policy.toValue();
+  }
+
+  /// Parse string back to HTTPCookieSameSitePolicy.
+  HTTPCookieSameSitePolicy? _sameSiteFromString(String? s) {
+    if (s == null || s.isEmpty) return null;
+    return HTTPCookieSameSitePolicy.fromValue(s);
+  }
+
+  /// Snapshot ALL cookies with full metadata for browser-equivalent restore.
   Future<void> _snapshotWebCookies(InAppWebViewController controller) async {
     try {
       final cm = CookieManager.instance();
       final url = WebUri(Env.webBaseUrl);
       final cookies = await cm.getCookies(url: url);
 
-      final map = <String, String>{};
+      final list = <Map<String, dynamic>>[];
+      String? userTypeValue;
+
       for (final c in cookies) {
-        final name = c.name;
-        final value = c.value ?? '';
-        if (name.isNotEmpty && value.isNotEmpty) {
-          map[name] = value;
+        final name = c.name.trim();
+        final value = (c.value ?? '').toString().trim();
+        if (name.isEmpty || value.isEmpty) continue;
+
+        final map = <String, dynamic>{
+          'name': name,
+          'value': value,
+          'domain': c.domain,
+          'path': c.path ?? '/',
+          'expiresDate': c.expiresDate,
+          'isSecure': c.isSecure ?? false,
+          'isHttpOnly': c.isHttpOnly ?? false,
+        };
+        final sameSiteStr = _sameSiteToString(c.sameSite);
+        if (sameSiteStr != null) {
+          map['sameSite'] = sameSiteStr;
+        }
+        list.add(map);
+
+        if (name.toLowerCase() == 'usertype' || name == 'userType') {
+          userTypeValue = value;
         }
       }
 
-      if (map.isNotEmpty) {
-        await _storage.write(key: _cookieSnapshotKey, value: jsonEncode(map));
-        debugPrint('🧠 Saved ALL cookie snapshot: ${map.keys.toList()}');
-      } else {
-        debugPrint('⚠️ No cookies found to snapshot');
+      await _storage.write(key: _cookieSnapshotKey, value: jsonEncode(list));
+
+      if (userTypeValue != null && userTypeValue.isNotEmpty) {
+        await _storage.write(key: _userTypeKey, value: userTypeValue);
       }
+
+      debugPrint('🧠 Saved full cookie snapshot: ${list.length} cookies');
     } catch (e) {
       debugPrint('⚠️ Cookie snapshot failed: $e');
     }
   }
 
-  /// Restore saved cookies before WebView loads (dual: LAX + NONE+Secure)
-  Future<void> _restoreCookieSnapshotBeforeLoad() async {
+  /// Restore ALL cookies from saved snapshot before first WebView load.
+  /// Returns count of cookies restored.
+  Future<int> _restoreCookieSnapshotBeforeLoad() async {
     try {
       final raw = await _storage.read(key: _cookieSnapshotKey);
-      if (raw == null || raw.isEmpty) return;
+      if (raw == null || raw.isEmpty) {
+        debugPrint('🍪 No cookie snapshot to restore');
+        return 0;
+      }
 
-      final Map<String, dynamic> map = jsonDecode(raw) as Map<String, dynamic>;
+      final list = jsonDecode(raw) as List<dynamic>;
       final cm = CookieManager.instance();
       final cookieUrl = WebUri(Env.webBaseUrl);
       final domain = Uri.parse(Env.webBaseUrl).host;
+      var restored = 0;
+      final restoredNames = <String>[];
+      final restoredDomains = <String>[];
 
-      for (final entry in map.entries) {
-        final name = entry.key;
-        final value = (entry.value ?? '').toString();
-        if (value.isEmpty) continue;
+      for (final item in list) {
+        final map = item as Map<String, dynamic>;
+        final name = (map['name'] ?? '').toString().trim();
+        final value = (map['value'] ?? '').toString().trim();
+        if (name.isEmpty || value.isEmpty) continue;
 
-        // 1) LAX version (matches web cookie writer)
+        final path = (map['path'] ?? '/').toString();
+        final cookieDomain = map['domain']?.toString() ?? domain;
+        final expiresDate = map['expiresDate'] as int?;
+        final isSecure = map['isSecure'] as bool? ?? false;
+        final isHttpOnly = map['isHttpOnly'] as bool? ?? false;
+        final sameSite = _sameSiteFromString(map['sameSite']?.toString());
+
         await cm.setCookie(
           url: cookieUrl,
           name: name,
           value: value,
-          domain: domain,
-          path: '/',
-          isSecure: false,
-          isHttpOnly: false,
-          sameSite: HTTPCookieSameSitePolicy.LAX,
+          domain: cookieDomain,
+          path: path,
+          expiresDate: expiresDate,
+          isSecure: isSecure,
+          isHttpOnly: isHttpOnly,
+          sameSite: sameSite,
         );
-
-        // 2) NONE+SECURE version (helps iOS WKWebView + cross-site)
-        await cm.setCookie(
-          url: cookieUrl,
-          name: name,
-          value: value,
-          domain: domain,
-          path: '/',
-          isSecure: true,
-          isHttpOnly: false,
-          sameSite: HTTPCookieSameSitePolicy.NONE,
-        );
+        restored++;
+        restoredNames.add(name);
+        restoredDomains.add(cookieDomain);
       }
 
-      debugPrint('🍪 Restored cookie snapshot before WebView load');
+      debugPrint('🍪 Restored $restored cookies from full snapshot before load');
+      debugPrint('🍪 Restored cookie names: $restoredNames');
+      debugPrint('🍪 Restored cookie domains: $restoredDomains');
+      debugPrint('🍪 Env.webBaseUrl host: ${Uri.parse(Env.webBaseUrl).host}');
+      return restored;
     } catch (e) {
       debugPrint('⚠️ Restore cookie snapshot failed: $e');
+      return 0;
     }
   }
 
-  /// Set token cookies only (no JS injection). Used by shouldOverrideUrlLoading to
-  /// quickly restore session when web redirects to /login but we have a valid token.
-  Future<void> _setCookiesOnly(
-    String accessToken, [
-    String? refreshToken,
-  ]) async {
+  /// Restore full cookie jar from saved snapshot (used when blocking /login
+  /// or post-load restore). Browser-equivalent: all cookies, not just auth.
+  Future<void> _restoreAllCookiesNow() async {
     try {
-      final cookieManager = CookieManager.instance();
+      final raw = await _storage.read(key: _cookieSnapshotKey);
+      if (raw == null || raw.isEmpty) {
+        debugPrint('🍪 No snapshot available for immediate restore');
+        return;
+      }
+
+      final list = jsonDecode(raw) as List<dynamic>;
+      final cm = CookieManager.instance();
       final cookieUrl = WebUri(Env.webBaseUrl);
       final domain = Uri.parse(Env.webBaseUrl).host;
-      const tokenNames = [
-        'token',
-        'access_token',
-        'accessToken',
-        'auth_token',
-      ];
-      for (final name in tokenNames) {
-        await cookieManager.setCookie(
+      final restoredNames = <String>[];
+      final restoredDomains = <String>[];
+
+      for (final item in list) {
+        final map = item as Map<String, dynamic>;
+        final name = (map['name'] ?? '').toString().trim();
+        final value = (map['value'] ?? '').toString().trim();
+        if (name.isEmpty || value.isEmpty) continue;
+
+        final path = (map['path'] ?? '/').toString();
+        final cookieDomain = map['domain']?.toString() ?? domain;
+        final expiresDate = map['expiresDate'] as int?;
+        final isSecure = map['isSecure'] as bool? ?? false;
+        final isHttpOnly = map['isHttpOnly'] as bool? ?? false;
+        final sameSite = _sameSiteFromString(map['sameSite']?.toString());
+
+        await cm.setCookie(
           url: cookieUrl,
           name: name,
-          value: accessToken,
-          domain: domain,
-          path: '/',
-          isSecure: false,
-          isHttpOnly: false,
-          sameSite: HTTPCookieSameSitePolicy.LAX,
+          value: value,
+          domain: cookieDomain,
+          path: path,
+          expiresDate: expiresDate,
+          isSecure: isSecure,
+          isHttpOnly: isHttpOnly,
+          sameSite: sameSite,
         );
-        await cookieManager.setCookie(
-          url: cookieUrl,
-          name: name,
-          value: accessToken,
-          domain: domain,
-          path: '/',
-          isSecure: true,
-          isHttpOnly: false,
-          sameSite: HTTPCookieSameSitePolicy.NONE,
-        );
+        restoredNames.add(name);
+        restoredDomains.add(cookieDomain);
       }
-      if (refreshToken != null && refreshToken.isNotEmpty) {
-        for (final name in ['refreshtoken', 'refresh_token']) {
-          await cookieManager.setCookie(
-            url: cookieUrl,
-            name: name,
-            value: refreshToken,
-            domain: domain,
-            path: '/',
-            isSecure: false,
-            isHttpOnly: false,
-            sameSite: HTTPCookieSameSitePolicy.LAX,
-          );
-          await cookieManager.setCookie(
-            url: cookieUrl,
-            name: name,
-            value: refreshToken,
-            domain: domain,
-            path: '/',
-            isSecure: true,
-            isHttpOnly: false,
-            sameSite: HTTPCookieSameSitePolicy.NONE,
-          );
-        }
-      }
+
+      debugPrint('🍪 Immediate full cookie restore completed');
+      debugPrint('🍪 Restored cookie names: $restoredNames');
+      debugPrint('🍪 Restored cookie domains: $restoredDomains');
+      debugPrint('🍪 Env.webBaseUrl host: ${Uri.parse(Env.webBaseUrl).host}');
     } catch (e) {
-      debugPrint('⚠️ _setCookiesOnly failed: $e');
+      debugPrint('⚠️ _restoreAllCookiesNow failed: $e');
     }
   }
 
@@ -949,17 +994,16 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
                   refreshToken: refreshToken,
                 );
 
-            // Update token flags so document-start injection uses new token on next load
-            _hasToken = true;
-            _tokenForUserScript = accessToken;
-            _refreshTokenForUserScript =
-                (refreshToken != null && refreshToken.isNotEmpty)
-                ? refreshToken
-                : null;
-            if (mounted) setState(() {});
+          // Update token flags
+          _hasToken = true;
+          if (mounted) setState(() {});
 
             if (_webViewController != null) {
               await Future.delayed(const Duration(milliseconds: 500));
+              await _snapshotWebCookies(_webViewController!);
+              await Future.delayed(const Duration(seconds: 1));
+              await _snapshotWebCookies(_webViewController!);
+              await Future.delayed(const Duration(seconds: 2));
               await _snapshotWebCookies(_webViewController!);
             }
 
@@ -1020,16 +1064,16 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
               if (refreshToken != null && refreshToken.isNotEmpty) {
                 await _storage.write(key: 'refresh_token', value: refreshToken);
                 ref.read(refreshTokenProvider.notifier).state = refreshToken;
-                _refreshTokenForUserScript = refreshToken;
-              } else {
-                _refreshTokenForUserScript = null;
               }
               _hasToken = true;
-              _tokenForUserScript = token;
               if (mounted) setState(() {});
 
               if (_webViewController != null) {
                 await Future.delayed(const Duration(milliseconds: 500));
+                await _snapshotWebCookies(_webViewController!);
+                await Future.delayed(const Duration(seconds: 1));
+                await _snapshotWebCookies(_webViewController!);
+                await Future.delayed(const Duration(seconds: 2));
                 await _snapshotWebCookies(_webViewController!);
               }
             } else {
@@ -1051,13 +1095,12 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
         await _storage.delete(key: 'access_token');
         await _storage.delete(key: 'refresh_token');
         await _storage.delete(key: _cookieSnapshotKey);
+        await _storage.delete(key: _userTypeKey);
         ref.read(accessTokenProvider.notifier).state = null;
         ref.read(refreshTokenProvider.notifier).state = null;
 
         // Update token flags
         _hasToken = false;
-        _tokenForUserScript = null;
-        _refreshTokenForUserScript = null;
         if (mounted) setState(() {});
 
         // Clear FCM token from NotificationService
@@ -1223,66 +1266,37 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
     );
   }
 
-  /// Build UserScript for token injection at document start (before SPA boots)
+  /// Build UserScripts for document start. No token injection - auth comes from
+  /// cookies restored before first load (browser-equivalent).
   UnmodifiableListView<UserScript> _buildInitialUserScripts() {
-    final scripts = <UserScript>[_buildBridgeUserScript()];
-    final token = _tokenForUserScript;
-    final refreshToken = _refreshTokenForUserScript;
-    if (token != null && token.isNotEmpty) {
-      // Inject access token and refresh token into storage before any SPA JavaScript runs
-      final refreshTokenJs = refreshToken != null && refreshToken.isNotEmpty
-          ? jsonEncode(refreshToken)
-          : 'null';
-      final source =
-          '''
-        (function() {
-          try {
-            var token = ${jsonEncode(token)};
-            var refreshToken = $refreshTokenJs;
-            var keys = ['access_token', 'accessToken', 'token', 'auth_token'];
-            keys.forEach(function(k) {
-              try {
-                localStorage.setItem(k, token);
-                sessionStorage.setItem(k, token);
-              } catch(e) {}
-            });
-            try {
-              localStorage.setItem('Authorization', 'Bearer ' + token);
-              sessionStorage.setItem('Authorization', 'Bearer ' + token);
-            } catch(e) {}
-            if (refreshToken) {
-              try {
-                localStorage.setItem('refreshtoken', refreshToken);
-                localStorage.setItem('refresh_token', refreshToken);
-                localStorage.setItem('refreshToken', refreshToken);
-                sessionStorage.setItem('refreshtoken', refreshToken);
-                sessionStorage.setItem('refresh_token', refreshToken);
-                sessionStorage.setItem('refreshToken', refreshToken);
-              } catch(e) {}
-            }
-            var expires = new Date(Date.now() + 365*24*60*60*1000).toUTCString();
-            keys.forEach(function(k) {
-              document.cookie = k + '=' + token + '; expires=' + expires + '; path=/; SameSite=None; Secure';
-            });
-            if (refreshToken) {
-              ['refreshtoken', 'refresh_token', 'refreshToken'].forEach(function(k) {
-                document.cookie = k + '=' + refreshToken + '; expires=' + expires + '; path=/; SameSite=None; Secure';
-              });
-            }
-            window.dispatchEvent(new Event('storage'));
-            window.dispatchEvent(new Event('auth:updated'));
-          } catch(e) { console.error('Token injection error:', e); }
-        })();
-      ''';
-      scripts.add(
-        UserScript(
-          source: source,
-          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-        ),
-      );
-      debugPrint('🔑 Document-start token UserScript added');
-    }
-    return UnmodifiableListView(scripts);
+    return UnmodifiableListView(<UserScript>[
+      // PREBOOT: Log document.cookie at document-start (before React)
+      UserScript(
+        source: '''
+          console.log('PREBOOT document.cookie = ' + document.cookie);
+        ''',
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+      // PREBOOT: Log auth cookie completeness at document-start
+      UserScript(
+        source: '''
+          console.log('PREBOOT auth cookie check', {
+            token: document.cookie.includes('token='),
+            refreshtoken: document.cookie.includes('refreshtoken='),
+            expired: document.cookie.includes('expired='),
+            permissions: document.cookie.includes('permissions='),
+            id: document.cookie.includes('id='),
+            fullname: document.cookie.includes('fullname='),
+            username: document.cookie.includes('username='),
+            email: document.cookie.includes('email='),
+            imageurl: document.cookie.includes('imageurl='),
+            usertype: document.cookie.includes('usertype=')
+          });
+        ''',
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+      _buildBridgeUserScript(),
+    ]);
   }
 
   /// Debug method to check what auth state exists in WebView
@@ -1326,176 +1340,6 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
       }
     } catch (e) {
       debugPrint('⚠️ Error debugging auth state: $e');
-    }
-  }
-
-  /// Inject stored authentication token into WebView localStorage/cookies
-  /// This allows the web app to auto-authenticate without requiring login
-  Future<void> _injectTokenIfAny(InAppWebViewController controller) async {
-    try {
-      // Read stored access token
-      final accessToken = await _storage.read(key: 'access_token');
-
-      if (accessToken == null || accessToken.isEmpty) {
-        debugPrint('🔑 No stored token found, skipping injection');
-        // Still debug to see what's in storage
-        await _debugAuthState(controller);
-        return;
-      }
-
-      debugPrint('🔑 Injecting stored token into WebView...');
-
-      final refreshToken = await _storage.read(key: 'refresh_token');
-
-      // Use Env.webBaseUrl for domain - on iOS initial load can be about:blank or intermediate redirect
-      final domain = Uri.parse(Env.webBaseUrl).host;
-      final cookieUrl = WebUri(Env.webBaseUrl);
-      debugPrint('🌐 Using domain: $domain (from Env.webBaseUrl)');
-
-      // Method 1: Set cookies via CookieManager - prioritize token (web uses helpers.getCookie("token"))
-      try {
-        final cookieManager = CookieManager.instance();
-
-        const tokenNames = [
-          'token',
-          'access_token',
-          'accessToken',
-          'auth_token',
-        ];
-        for (final name in tokenNames) {
-          if (accessToken.isEmpty) continue;
-          // 1) LAX + Secure=false (matches web)
-          await cookieManager.setCookie(
-            url: cookieUrl,
-            name: name,
-            value: accessToken,
-            domain: domain,
-            path: '/',
-            isSecure: false,
-            isHttpOnly: false,
-            sameSite: HTTPCookieSameSitePolicy.LAX,
-          );
-          // 2) NONE + Secure=true (iOS/cross-site)
-          await cookieManager.setCookie(
-            url: cookieUrl,
-            name: name,
-            value: accessToken,
-            domain: domain,
-            path: '/',
-            isSecure: true,
-            isHttpOnly: false,
-            sameSite: HTTPCookieSameSitePolicy.NONE,
-          );
-        }
-        if (refreshToken != null && refreshToken.isNotEmpty) {
-          for (final name in ['refreshtoken', 'refresh_token']) {
-            await cookieManager.setCookie(
-              url: cookieUrl,
-              name: name,
-              value: refreshToken,
-              domain: domain,
-              path: '/',
-              isSecure: false,
-              isHttpOnly: false,
-              sameSite: HTTPCookieSameSitePolicy.LAX,
-            );
-            await cookieManager.setCookie(
-              url: cookieUrl,
-              name: name,
-              value: refreshToken,
-              domain: domain,
-              path: '/',
-              isSecure: true,
-              isHttpOnly: false,
-              sameSite: HTTPCookieSameSitePolicy.NONE,
-            );
-          }
-        }
-        debugPrint(
-          '✅ Token set as cookies via CookieManager (LAX + NONE+Secure)',
-        );
-      } catch (e) {
-        debugPrint('⚠️ Error setting cookies via CookieManager: $e');
-      }
-
-      // Method 2: Inject token into localStorage and sessionStorage via JavaScript
-      // NOTE: We inject into both localStorage AND sessionStorage because many SPAs use sessionStorage
-      await controller.evaluateJavascript(
-        source:
-            '''
-        (function() {
-          try {
-            var token = ${jsonEncode(accessToken)};
-            var refreshToken = ${refreshToken != null && refreshToken.isNotEmpty ? jsonEncode(refreshToken) : 'null'};
-
-            localStorage.setItem('access_token', token);
-            localStorage.setItem('accessToken', token);
-            localStorage.setItem('token', token);
-            localStorage.setItem('auth_token', token);
-            localStorage.setItem('Authorization', 'Bearer ' + token);
-
-            sessionStorage.setItem('access_token', token);
-            sessionStorage.setItem('accessToken', token);
-            sessionStorage.setItem('token', token);
-            sessionStorage.setItem('auth_token', token);
-
-            if (refreshToken) {
-              localStorage.setItem('refreshtoken', refreshToken);
-              localStorage.setItem('refresh_token', refreshToken);
-              localStorage.setItem('refreshToken', refreshToken);
-
-              sessionStorage.setItem('refreshtoken', refreshToken);
-              sessionStorage.setItem('refresh_token', refreshToken);
-              sessionStorage.setItem('refreshToken', refreshToken);
-            }
-
-            var expires = new Date();
-            expires.setTime(expires.getTime() + (365 * 24 * 60 * 60 * 1000));
-            var expiresStr = expires.toUTCString();
-
-            document.cookie = 'access_token=' + token + '; expires=' + expiresStr + '; path=/; SameSite=None; Secure';
-            document.cookie = 'accessToken=' + token + '; expires=' + expiresStr + '; path=/; SameSite=None; Secure';
-            document.cookie = 'token=' + token + '; expires=' + expiresStr + '; path=/; SameSite=None; Secure';
-            document.cookie = 'auth_token=' + token + '; expires=' + expiresStr + '; path=/; SameSite=None; Secure';
-
-            if (refreshToken) {
-              document.cookie = 'refreshtoken=' + refreshToken + '; expires=' + expiresStr + '; path=/; SameSite=None; Secure';
-              document.cookie = 'refresh_token=' + refreshToken + '; expires=' + expiresStr + '; path=/; SameSite=None; Secure';
-              document.cookie = 'refreshToken=' + refreshToken + '; expires=' + expiresStr + '; path=/; SameSite=None; Secure';
-            }
-
-            console.log('✅ Token injected into localStorage, sessionStorage, and cookies');
-
-            window.dispatchEvent(new Event('storage'));
-            window.dispatchEvent(new Event('auth:updated'));
-            document.dispatchEvent(new Event('auth:updated'));
-
-            if (window.setAuthToken && typeof window.setAuthToken === 'function') {
-              window.setAuthToken(token);
-            }
-            if (window.__APP__ && window.__APP__.auth && typeof window.__APP__.auth.restore === 'function') {
-              window.__APP__.auth.restore(token);
-            }
-
-            if (window.location.pathname.includes('/login')) {
-              setTimeout(function() {
-                window.location.href = '/';
-              }, 500);
-            }
-          } catch (e) {
-            console.error('❌ Error injecting token: ' + e);
-          }
-        })();
-        ''',
-      );
-
-      debugPrint('✅ Token injected successfully via JavaScript');
-
-      // Debug after injection to verify it worked
-      await Future.delayed(const Duration(milliseconds: 300));
-      await _debugAuthState(controller);
-    } catch (e) {
-      debugPrint('❌ Error injecting token: $e');
     }
   }
 
@@ -1589,18 +1433,18 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
                           (u?.fragment.contains('login') ?? false);
 
                       // Block /login redirect when we have a token and user didn't log out
-                      if (_hasToken && isLogin && !_isLoggingOut) {
+                      if (_hasToken &&
+                          isLogin &&
+                          !_isLoggingOut &&
+                          _loginRescueAttempts < _maxLoginRescueAttempts) {
                         debugPrint(
-                          '🛡️ Blocking /login while token exists -> set cookies and go home',
+                          '🛡️ Blocking /login while token exists -> restore full cookies and go home (attempt ${_loginRescueAttempts + 1}/$_maxLoginRescueAttempts)',
                         );
-                        await _setCookiesOnly(
-                          _tokenForUserScript!,
-                          _refreshTokenForUserScript,
-                        );
+                        _loginRescueAttempts++;
+                        await _restoreAllCookiesNow();
+                        final homeUrl = await _resolveHomeUrl();
                         await controller.loadUrl(
-                          urlRequest: URLRequest(
-                            url: WebUri('${Env.webBaseUrl}/'),
-                          ),
+                          urlRequest: URLRequest(url: WebUri(homeUrl)),
                         );
                         return NavigationActionPolicy.CANCEL;
                       }
@@ -1667,26 +1511,34 @@ class _WebViewScreenState extends ConsumerState<WebViewScreen>
                       // Reset logout flag when page loads successfully
                       _isLoggingOut = false;
 
-                      // Debug auth state BEFORE injection (baseline)
-                      debugPrint('🔎 Debugging auth state BEFORE injection:');
-                      await _debugAuthState(controller);
-
                       final urlStr = url.toString();
                       final u = Uri.tryParse(urlStr);
                       final isLogin =
                           (u?.path.contains('/login') ?? false) ||
                           (u?.fragment.contains('login') ?? false);
 
-                      // Post-load restore: token exists but we landed on /login -> inject and reload
-                      if (_hasToken && isLogin && !_isLoggingOut) {
+                      // Reset login rescue attempts on successful non-login load
+                      if (!isLogin) {
+                        _loginRescueAttempts = 0;
+                      }
+
+                      // Debug auth state BEFORE injection (baseline)
+                      debugPrint('🔎 Debugging auth state BEFORE injection:');
+                      await _debugAuthState(controller);
+
+                      // Post-load restore: token exists but we landed on /login -> restore full cookies and go home
+                      if (_hasToken &&
+                          isLogin &&
+                          !_isLoggingOut &&
+                          _loginRescueAttempts < _maxLoginRescueAttempts) {
                         debugPrint(
-                          '🛡️ Post-load restore: on /login with token -> inject and go /',
+                          '🛡️ Post-load restore: on /login with token -> restore full cookies and go home (attempt ${_loginRescueAttempts + 1}/$_maxLoginRescueAttempts)',
                         );
-                        await _injectTokenIfAny(controller);
+                        _loginRescueAttempts++;
+                        await _restoreAllCookiesNow();
+                        final homeUrl = await _resolveHomeUrl();
                         await controller.loadUrl(
-                          urlRequest: URLRequest(
-                            url: WebUri('${Env.webBaseUrl}/'),
-                          ),
+                          urlRequest: URLRequest(url: WebUri(homeUrl)),
                         );
                         return;
                       }
